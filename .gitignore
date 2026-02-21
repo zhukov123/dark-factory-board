@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+TaskBoard.Ui/node_modules/
+TaskBoard.Ui/dist/
+TaskBoard.Api/*.db
+TaskBoard.Api/*.db-shm
+TaskBoard.Api/*.db-wal
+.vs/
+.DS_Store
