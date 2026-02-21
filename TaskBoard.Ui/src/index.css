@@ -298,7 +298,7 @@ button.secondary:hover:not(:disabled) {
 }
 
 .ticket-card-blocked .ticket-button {
-  border-left: 3px solid #d4848484;
+  border-left: 3px solid #d48484;
   opacity: 0.82;
 }
 

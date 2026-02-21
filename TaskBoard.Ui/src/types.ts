@@ -81,9 +81,29 @@ export interface EventDto {
   createdAt: string
 }
 
+export type TicketDraft = {
+  title: string
+  status: TicketStatus
+  priority: number
+  repo: string
+  labelsText: string
+  acceptanceText: string
+  testPlan: string
+  description: string
+}
+
 export interface TicketFilters {
   status?: string
   repo?: string
   label?: string
   q?: string
+  limit?: number
+  offset?: number
+}
+
+export interface TicketsPage {
+  total: number
+  limit: number
+  offset: number
+  items: TicketDto[]
 }

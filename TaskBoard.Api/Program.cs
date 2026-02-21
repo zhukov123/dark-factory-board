@@ -1,8 +1,11 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using TaskBoard.Api.Contracts;
 using TaskBoard.Api.Data;
 using TaskBoard.Api.Domain;
+using TaskBoard.Api.Helpers;
 using TaskBoard.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,7 +18,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower;
     options.SerializerOptions.PropertyNameCaseInsensitive = true;
 });
-builder.Services.AddSingleton<TicketIdService>();
+builder.Services.AddScoped<TicketIdService>();
 builder.Services.AddSingleton<DagService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -44,7 +47,8 @@ var protectedSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     "eligible",
     "pick-next",
     "validate",
-    "events"
+    "events",
+    "deps"
 };
 
 app.Use(async (context, next) =>
@@ -72,7 +76,15 @@ app.Use(async (context, next) =>
     }
 
     var actualToken = authHeader["Bearer ".Length..].Trim();
-    if (string.IsNullOrWhiteSpace(expectedToken) || !string.Equals(actualToken, expectedToken, StringComparison.Ordinal))
+    if (string.IsNullOrWhiteSpace(expectedToken))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { error = "invalid token" });
+        return;
+    }
+    var expectedBytes = Encoding.UTF8.GetBytes(expectedToken);
+    var actualBytes = Encoding.UTF8.GetBytes(actualToken);
+    if (expectedBytes.Length != actualBytes.Length || !CryptographicOperations.FixedTimeEquals(expectedBytes.AsSpan(), actualBytes.AsSpan()))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         await context.Response.WriteAsJsonAsync(new { error = "invalid token" });
@@ -112,8 +124,8 @@ app.MapPost("/tickets", async (
         Status = hasParsedStatus ? parsedCreateStatus : TicketStatus.Backlog,
         Priority = request.Priority ?? 0,
         Repo = request.Repo?.Trim() ?? string.Empty,
-        LabelsJson = SerializeList(request.Labels),
-        AcceptanceCriteriaJson = SerializeList(request.AcceptanceCriteria),
+        LabelsJson = DtoMapping.SerializeList(request.Labels),
+        AcceptanceCriteriaJson = DtoMapping.SerializeList(request.AcceptanceCriteria),
         TestPlan = request.TestPlan,
         Description = request.Description,
         CreatedAt = now,
@@ -131,7 +143,7 @@ app.MapPost("/tickets", async (
 
     await db.SaveChangesAsync(cancellationToken);
 
-    return Results.Created($"/tickets/{entity.Id}", ToTicketDto(entity, null));
+    return Results.Created($"/tickets/{entity.Id}", DtoMapping.ToTicketDto(entity, null));
 });
 
 app.MapGet("/tickets/{id}", async (string id, TaskBoardDbContext db, CancellationToken cancellationToken) =>
@@ -142,7 +154,7 @@ app.MapGet("/tickets/{id}", async (string id, TaskBoardDbContext db, Cancellatio
 
     return ticket is null
         ? Results.NotFound(new { error = "ticket not found" })
-        : Results.Ok(ToTicketDto(ticket, ticket.Run));
+        : Results.Ok(DtoMapping.ToTicketDto(ticket, ticket.Run));
 });
 
 app.MapGet("/tickets", async (
@@ -150,12 +162,15 @@ app.MapGet("/tickets", async (
     string? repo,
     string? label,
     string? q,
+    int? limit,
+    int? offset,
     TaskBoardDbContext db,
     CancellationToken cancellationToken) =>
 {
     var query = db.Tickets
         .Include(t => t.Run)
         .Where(t => !t.IsDeleted)
+        .AsNoTracking()
         .AsQueryable();
 
     if (!string.IsNullOrWhiteSpace(status))
@@ -183,11 +198,23 @@ app.MapGet("/tickets", async (
         query = query.Where(t => t.Title.Contains(q) || (t.Description != null && t.Description.Contains(q)));
     }
 
+    var total = await query.CountAsync(cancellationToken);
+    var pageSize = Math.Clamp(limit ?? 100, 1, 500);
+    var skip = Math.Max(offset ?? 0, 0);
+
     var tickets = await query
         .OrderByDescending(t => t.UpdatedAt)
+        .Skip(skip)
+        .Take(pageSize)
         .ToListAsync(cancellationToken);
 
-    return Results.Ok(tickets.Select(t => ToTicketDto(t, t.Run)).ToList());
+    return Results.Ok(new
+    {
+        total,
+        limit = pageSize,
+        offset = skip,
+        items = tickets.Select(t => DtoMapping.ToTicketDto(t, t.Run)).ToList()
+    });
 });
 
 app.MapPatch("/tickets/{id}", async (string id, PatchTicketRequest request, TaskBoardDbContext db, CancellationToken cancellationToken) =>
@@ -232,12 +259,12 @@ app.MapPatch("/tickets/{id}", async (string id, PatchTicketRequest request, Task
 
     if (request.Labels is not null)
     {
-        ticket.LabelsJson = SerializeList(request.Labels);
+        ticket.LabelsJson = DtoMapping.SerializeList(request.Labels);
     }
 
     if (request.AcceptanceCriteria is not null)
     {
-        ticket.AcceptanceCriteriaJson = SerializeList(request.AcceptanceCriteria);
+        ticket.AcceptanceCriteriaJson = DtoMapping.SerializeList(request.AcceptanceCriteria);
     }
 
     if (request.TestPlan is not null)
@@ -254,7 +281,7 @@ app.MapPatch("/tickets/{id}", async (string id, PatchTicketRequest request, Task
     await db.SaveChangesAsync(cancellationToken);
 
     var run = await db.Runs.SingleOrDefaultAsync(r => r.TicketId == id, cancellationToken);
-    return Results.Ok(ToTicketDto(ticket, run));
+    return Results.Ok(DtoMapping.ToTicketDto(ticket, run));
 });
 
 app.MapDelete("/tickets/{id}", async (string id, TaskBoardDbContext db, CancellationToken cancellationToken) =>
@@ -311,6 +338,48 @@ app.MapGet("/tickets/{id}/deps", async (string id, TaskBoardDbContext db, Cancel
         .ToListAsync(cancellationToken);
 
     return Results.Ok(new { blocked_by = blockedBy, blocks });
+});
+
+app.MapGet("/deps", async (string? ids, TaskBoardDbContext db, CancellationToken cancellationToken) =>
+{
+    var ticketIds = (ids ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(s => s.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    if (ticketIds.Count == 0)
+    {
+        return Results.Ok(new Dictionary<string, object>());
+    }
+
+    var activeIds = await db.Tickets
+        .Where(t => ticketIds.Contains(t.Id) && !t.IsDeleted)
+        .Select(t => t.Id)
+        .ToListAsync(cancellationToken);
+
+    var deps = await db.Dependencies
+        .Where(d => activeIds.Contains(d.TicketId) && activeIds.Contains(d.BlockedById))
+        .ToListAsync(cancellationToken);
+
+    var blockedByLookup = deps
+        .GroupBy(d => d.TicketId, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.BlockedById).OrderBy(x => x, StringComparer.Ordinal).ToList(), StringComparer.OrdinalIgnoreCase);
+    var blocksLookup = deps
+        .GroupBy(d => d.BlockedById, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.TicketId).OrderBy(x => x, StringComparer.Ordinal).ToList(), StringComparer.OrdinalIgnoreCase);
+
+    var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+    foreach (var id in ticketIds)
+    {
+        result[id] = new
+        {
+            blocked_by = blockedByLookup.GetValueOrDefault(id) ?? [],
+            blocks = blocksLookup.GetValueOrDefault(id) ?? []
+        };
+    }
+
+    return Results.Ok(result);
 });
 
 app.MapPut("/tickets/{id}/deps", async (
@@ -432,7 +501,7 @@ app.MapPost("/tickets/{id}/transition", async (
     await db.SaveChangesAsync(cancellationToken);
     var run = await db.Runs.SingleOrDefaultAsync(r => r.TicketId == id, cancellationToken);
 
-    return Results.Ok(ToTicketDto(ticket, run));
+    return Results.Ok(DtoMapping.ToTicketDto(ticket, run));
 });
 
 app.MapPost("/runs/acquire", async (
@@ -485,7 +554,7 @@ app.MapPost("/runs/acquire", async (
     return Results.Ok(new
     {
         acquired,
-        run = ToRunDto(run)
+        run = DtoMapping.ToRunDto(run)
     });
 });
 
@@ -522,7 +591,7 @@ app.MapPost("/runs/heartbeat", async (
     return Results.Ok(new
     {
         ok = true,
-        run = ToRunDto(run)
+        run = DtoMapping.ToRunDto(run)
     });
 });
 
@@ -589,16 +658,6 @@ app.MapPatch("/runs/{ticketId}", async (
         run.LastError = request.LastError;
     }
 
-    if (request.LockOwner is not null)
-    {
-        run.LockOwner = request.LockOwner;
-    }
-
-    if (request.LockExpiresAt.HasValue)
-    {
-        run.LockExpiresAt = request.LockExpiresAt.Value;
-    }
-
     run.UpdatedAt = DateTime.UtcNow;
 
     db.Events.Add(new EventEntity
@@ -611,7 +670,7 @@ app.MapPatch("/runs/{ticketId}", async (
 
     await db.SaveChangesAsync(cancellationToken);
 
-    return Results.Ok(ToRunDto(run));
+    return Results.Ok(DtoMapping.ToRunDto(run));
 });
 
 app.MapGet("/eligible", async (
@@ -770,7 +829,7 @@ app.MapPost("/events", async (CreateEventRequest request, TaskBoardDbContext db,
     db.Events.Add(entity);
     await db.SaveChangesAsync(cancellationToken);
 
-    return Results.Created($"/events/{entity.Id}", ToEventDto(entity));
+    return Results.Created($"/events/{entity.Id}", DtoMapping.ToEventDto(entity));
 });
 
 app.MapGet("/events", async (
@@ -806,83 +865,11 @@ app.MapGet("/events", async (
         .Take(take)
         .ToListAsync(cancellationToken);
 
-    return Results.Ok(events.Select(ToEventDto).ToList());
+    return Results.Ok(events.Select(DtoMapping.ToEventDto).ToList());
 });
 
 app.MapFallbackToFile("index.html");
 
 app.Run();
-
-static TicketDto ToTicketDto(TicketEntity ticket, RunEntity? run) => new(
-    ticket.Id,
-    ticket.Title,
-    ticket.Status.ToString(),
-    ticket.Priority,
-    ticket.Repo,
-    DeserializeList(ticket.LabelsJson),
-    DeserializeList(ticket.AcceptanceCriteriaJson),
-    ticket.TestPlan,
-    ticket.Description,
-    ticket.CreatedAt,
-    ticket.UpdatedAt,
-    run is null ? null : ToRunDto(run));
-
-static RunDto ToRunDto(RunEntity run) => new(
-    run.TicketId,
-    run.Phase.ToString().ToLowerInvariant(),
-    run.Attempt,
-    run.LockOwner,
-    run.LockExpiresAt,
-    run.Branch,
-    run.PrNumber,
-    run.LastCiState.ToString().ToLowerInvariant(),
-    run.LastSummary,
-    run.LastError,
-    run.UpdatedAt);
-
-static EventDto ToEventDto(EventEntity entity)
-{
-    object payload;
-    try
-    {
-        payload = JsonSerializer.Deserialize<object>(entity.PayloadJson) ?? new { };
-    }
-    catch
-    {
-        payload = new { raw = entity.PayloadJson };
-    }
-
-    return new EventDto(entity.Id, entity.TicketId, entity.Type, payload, entity.CreatedAt);
-}
-
-static string SerializeList(List<string>? values)
-{
-    var normalized = values is null
-        ? []
-        : values
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .Select(v => v.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-    return JsonSerializer.Serialize(normalized);
-}
-
-static List<string> DeserializeList(string? json)
-{
-    if (string.IsNullOrWhiteSpace(json))
-    {
-        return [];
-    }
-
-    try
-    {
-        return JsonSerializer.Deserialize<List<string>>(json) ?? [];
-    }
-    catch
-    {
-        return [];
-    }
-}
 
 public partial class Program;

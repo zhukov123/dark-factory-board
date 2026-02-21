@@ -5,6 +5,7 @@ import type {
   TicketDepsResponse,
   TicketDto,
   TicketFilters,
+  TicketsPage,
   ValidateResponse,
 } from './types'
 
@@ -120,16 +121,41 @@ export class TaskBoardApiClient {
     this.onUnauthorized = options.onUnauthorized
   }
 
-  async getTickets(filters: TicketFilters): Promise<TicketDto[]> {
+  async getTickets(filters: TicketFilters): Promise<TicketsPage> {
     const params = new URLSearchParams()
     if (filters.status) params.set('status', filters.status)
     if (filters.repo) params.set('repo', filters.repo)
     if (filters.label) params.set('label', filters.label)
     if (filters.q) params.set('q', filters.q)
+    if (filters.limit != null) params.set('limit', String(filters.limit))
+    if (filters.offset != null) params.set('offset', String(filters.offset))
     const suffix = params.size > 0 ? `?${params.toString()}` : ''
 
-    const data = await this.request<RawTicketDto[]>(`/tickets${suffix}`)
-    return data.map(mapTicket)
+    const data = await this.request<{
+      total: number
+      limit: number
+      offset: number
+      items: RawTicketDto[]
+    }>(`/tickets${suffix}`)
+    return {
+      total: data.total,
+      limit: data.limit,
+      offset: data.offset,
+      items: data.items.map(mapTicket),
+    }
+  }
+
+  async getDepsBatch(ticketIds: string[]): Promise<Record<string, TicketDepsResponse>> {
+    if (ticketIds.length === 0) return {}
+    const ids = ticketIds.join(',')
+    const raw = await this.request<Record<string, { blocked_by: string[]; blocks: string[] }>>(
+      `/deps?ids=${encodeURIComponent(ids)}`,
+    )
+    const result: Record<string, TicketDepsResponse> = {}
+    for (const [id, value] of Object.entries(raw)) {
+      result[id] = { blocked_by: value.blocked_by, blocks: value.blocks }
+    }
+    return result
   }
 
   async createTicket(payload: TicketPayload): Promise<TicketDto> {

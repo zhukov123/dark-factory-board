@@ -123,7 +123,8 @@ public sealed class ApiIntegrationTests
 
         var listResponse = await client.GetAsync("/tickets");
         var listJson = JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync());
-        var ids = listJson.RootElement.EnumerateArray().Select(x => x.GetProperty("id").GetString()).ToList();
+        var items = listJson.RootElement.GetProperty("items");
+        var ids = items.EnumerateArray().Select(x => x.GetProperty("id").GetString()).ToList();
         Assert.DoesNotContain(ticket, ids);
     }
 
@@ -140,6 +141,175 @@ public sealed class ApiIntegrationTests
 
         var allowed = await TransitionAsync(client, ticket, "InProgress", force: true, HttpStatusCode.OK);
         Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+    }
+
+    [Fact]
+    public async Task Invalid_Token_Returns_401()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "wrong-token");
+
+        var response = await client.GetAsync("/tickets");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Patch_Ticket_Updates_Fields()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var ticket = await CreateTicketAsync(client, "Original", "Ready", 1);
+
+        var patchResponse = await client.PatchAsJsonAsync($"/tickets/{ticket}", new
+        {
+            title = "Updated Title",
+            status = "InProgress",
+            priority = 5
+        });
+        Assert.Equal(HttpStatusCode.OK, patchResponse.StatusCode);
+
+        var json = JsonDocument.Parse(await patchResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Updated Title", json.RootElement.GetProperty("title").GetString());
+        Assert.Equal("InProgress", json.RootElement.GetProperty("status").GetString());
+        Assert.Equal(5, json.RootElement.GetProperty("priority").GetInt32());
+    }
+
+    [Fact]
+    public async Task Heartbeat_Extends_Lock()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var ticket = await CreateTicketAsync(client, "Heartbeat target", "Ready", 1);
+
+        var acquireResponse = await client.PostAsJsonAsync("/runs/acquire", new { ticket_id = ticket, owner = "orch-1", ttl_seconds = 10 });
+        Assert.Equal(HttpStatusCode.OK, acquireResponse.StatusCode);
+        var acquireDoc = JsonDocument.Parse(await acquireResponse.Content.ReadAsStringAsync());
+        Assert.True(acquireDoc.RootElement.GetProperty("acquired").GetBoolean());
+
+        var heartbeatResponse = await client.PostAsJsonAsync("/runs/heartbeat", new { ticket_id = ticket, owner = "orch-1", ttl_seconds = 60 });
+        Assert.Equal(HttpStatusCode.OK, heartbeatResponse.StatusCode);
+        var heartbeatDoc = JsonDocument.Parse(await heartbeatResponse.Content.ReadAsStringAsync());
+        Assert.True(heartbeatDoc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Validate_Returns_Ok_When_No_Cycle()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var t1 = await CreateTicketAsync(client, "A", "Ready", 1);
+        var t2 = await CreateTicketAsync(client, "B", "Ready", 1);
+        await PutDepsAsync(client, t2, [t1], HttpStatusCode.NoContent);
+
+        var response = await client.GetAsync("/validate");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(json.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Validate_Returns_Ok_After_Cycle_Rejected()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var t1 = await CreateTicketAsync(client, "C1", "Ready", 1);
+        var t2 = await CreateTicketAsync(client, "C2", "Ready", 1);
+        var t3 = await CreateTicketAsync(client, "C3", "Ready", 1);
+        await PutDepsAsync(client, t2, [t1], HttpStatusCode.NoContent);
+        await PutDepsAsync(client, t3, [t2], HttpStatusCode.NoContent);
+        await PutDepsAsync(client, t1, [t3], HttpStatusCode.Conflict);
+
+        var response = await client.GetAsync("/validate");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(json.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Get_Tickets_With_Filters_And_Pagination()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        await CreateTicketAsync(client, "F1", "Ready", 1);
+        await CreateTicketAsync(client, "F2", "Done", 1);
+        await CreateTicketAsync(client, "F3", "Ready", 1);
+
+        var response = await client.GetAsync("/tickets?status=Ready&limit=2&offset=0");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(json.RootElement.TryGetProperty("total", out _));
+        Assert.Equal(2, json.RootElement.GetProperty("limit").GetInt32());
+        Assert.Equal(0, json.RootElement.GetProperty("offset").GetInt32());
+        var items = json.RootElement.GetProperty("items");
+        Assert.True(items.GetArrayLength() >= 2);
+    }
+
+    [Fact]
+    public async Task Get_Deps_Batch_Returns_All_Requested()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var t1 = await CreateTicketAsync(client, "D1", "Ready", 1);
+        var t2 = await CreateTicketAsync(client, "D2", "Ready", 1);
+        await PutDepsAsync(client, t2, [t1], HttpStatusCode.NoContent);
+
+        var response = await client.GetAsync($"/deps?ids={t1},{t2}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var key1 = t1.ToLowerInvariant();
+        var key2 = t2.ToLowerInvariant();
+        Assert.True(json.RootElement.TryGetProperty(key1, out var deps1));
+        Assert.True(json.RootElement.TryGetProperty(key2, out var deps2));
+        Assert.Equal(0, deps1.GetProperty("blocked_by").GetArrayLength());
+        Assert.Equal(1, deps2.GetProperty("blocked_by").GetArrayLength());
+        Assert.Equal(t1, deps2.GetProperty("blocked_by")[0].GetString());
+    }
+
+    [Fact]
+    public async Task Create_Event_And_Get_Events()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var ticket = await CreateTicketAsync(client, "Event ticket", "Ready", 1);
+
+        var createResponse = await client.PostAsJsonAsync("/events", new { ticket_id = ticket, type = "custom.test", payload = new { key = "value" } });
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+        var getResponse = await client.GetAsync($"/events?ticket_id={ticket}&limit=10");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        var json = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        var events = json.RootElement.EnumerateArray().ToList();
+        Assert.True(events.Count >= 1);
+        var hasCustomEvent = events.Any(e => e.GetProperty("type").GetString() == "custom.test");
+        Assert.True(hasCustomEvent);
+    }
+
+    [Fact]
+    public async Task Create_Ticket_With_Empty_Title_Returns_400()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var response = await client.PostAsJsonAsync("/tickets", new { title = "", status = "Ready", priority = 1 });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Get_NonExistent_Ticket_Returns_404()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var response = await client.GetAsync("/tickets/NONEXISTENT");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     private static HttpClient CreateAuthedClient(TestAppFactory factory)

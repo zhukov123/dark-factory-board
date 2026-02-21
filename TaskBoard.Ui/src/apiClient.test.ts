@@ -9,7 +9,12 @@ describe('TaskBoardApiClient', () => {
   it('adds bearer token header on requests', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ total: 0, limit: 100, offset: 0, items: [] }),
+          { status: 200 },
+        ),
+      )
 
     const client = new TaskBoardApiClient({ token: 'abc123' })
     await client.getTickets({})

@@ -37,9 +37,7 @@ public sealed record PatchRunRequest(
     int? PrNumber,
     string? LastCiState,
     string? LastSummary,
-    string? LastError,
-    string? LockOwner,
-    DateTime? LockExpiresAt);
+    string? LastError);
 
 public sealed record CreateEventRequest(string? TicketId, string Type, object? Payload);
 
