@@ -70,6 +70,8 @@ function App() {
 
   const [depsDraft, setDepsDraft] = useState<string[]>([])
   const [simulateTicketId, setSimulateTicketId] = useState('')
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [activeLowerTab, setActiveLowerTab] = useState<'insights' | 'details'>('insights')
 
   const client = useMemo(
     () =>
@@ -182,6 +184,7 @@ function App() {
         testPlan: '',
         description: '',
       })
+      setIsCreateModalOpen(false)
       void invalidateBoard(queryClient)
     },
     onError: (error) => setErrorMessage(formatError(error)),
@@ -287,6 +290,11 @@ function App() {
     return grouped
   }, [tickets])
 
+  const openTicketDetails = (ticketId: string) => {
+    setSelectedTicketId(ticketId)
+    setActiveLowerTab('details')
+  }
+
   if (!token) {
     return (
       <TokenGate
@@ -320,6 +328,9 @@ function App() {
           </button>
         </div>
         <div className="toolbar-right">
+          <button type="button" onClick={() => setIsCreateModalOpen(true)}>
+            New Ticket
+          </button>
           <button type="button" onClick={() => void invalidateBoard(queryClient)}>
             Refresh
           </button>
@@ -370,106 +381,137 @@ function App() {
         </div>
       </section>
 
-      <section className="panel">
-        <h2>Create Ticket</h2>
-        <div className="grid grid-4">
-          <label>
-            Title
-            <input
-              value={createDraft.title}
-              onChange={(event) => setCreateDraft((current) => ({ ...current, title: event.target.value }))}
-            />
-          </label>
-          <label>
-            Status
-            <select
-              value={createDraft.status}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, status: event.target.value as TicketStatus }))
-              }
-            >
-              {STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Priority
-            <input
-              type="number"
-              value={createDraft.priority}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, priority: Number(event.target.value) }))
-              }
-            />
-          </label>
-          <label>
-            Repo
-            <input
-              value={createDraft.repo}
-              onChange={(event) => setCreateDraft((current) => ({ ...current, repo: event.target.value }))}
-            />
-          </label>
-        </div>
-        <div className="grid grid-2">
-          <label>
-            Labels (comma separated)
-            <input
-              value={createDraft.labelsText}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, labelsText: event.target.value }))
-              }
-            />
-          </label>
-          <label>
-            Acceptance Criteria (one per line)
-            <textarea
-              value={createDraft.acceptanceText}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, acceptanceText: event.target.value }))
-              }
-            />
-          </label>
-          <label>
-            Test Plan
-            <textarea
-              value={createDraft.testPlan}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, testPlan: event.target.value }))
-              }
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              value={createDraft.description}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, description: event.target.value }))
-              }
-            />
-          </label>
-        </div>
-        <button
-          type="button"
-          disabled={!createDraft.title.trim() || createMutation.isPending}
-          onClick={() =>
-            createMutation.mutate({
-              title: createDraft.title.trim(),
-              status: createDraft.status,
-              priority: createDraft.priority,
-              repo: createDraft.repo,
-              labels: splitCsv(createDraft.labelsText),
-              acceptanceCriteria: splitLines(createDraft.acceptanceText),
-              testPlan: createDraft.testPlan,
-              description: createDraft.description,
-            })
-          }
+      {isCreateModalOpen && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!createMutation.isPending) {
+              setIsCreateModalOpen(false)
+            }
+          }}
         >
-          {createMutation.isPending ? 'Creating...' : 'Create Ticket'}
-        </button>
-      </section>
+          <section className="panel modal-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Create Ticket</h2>
+              <button
+                type="button"
+                className="secondary"
+                disabled={createMutation.isPending}
+                onClick={() => setIsCreateModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="grid grid-4">
+              <label>
+                Title
+                <input
+                  value={createDraft.title}
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, title: event.target.value }))}
+                />
+              </label>
+              <label>
+                Status
+                <select
+                  value={createDraft.status}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, status: event.target.value as TicketStatus }))
+                  }
+                >
+                  {STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Priority
+                <input
+                  type="number"
+                  value={createDraft.priority}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, priority: Number(event.target.value) }))
+                  }
+                />
+              </label>
+              <label>
+                Repo
+                <input
+                  value={createDraft.repo}
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, repo: event.target.value }))}
+                />
+              </label>
+            </div>
+            <div className="grid grid-2">
+              <label>
+                Labels (comma separated)
+                <input
+                  value={createDraft.labelsText}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, labelsText: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Acceptance Criteria (one per line)
+                <textarea
+                  value={createDraft.acceptanceText}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, acceptanceText: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Test Plan
+                <textarea
+                  value={createDraft.testPlan}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, testPlan: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  value={createDraft.description}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, description: event.target.value }))
+                  }
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button
+                type="button"
+                disabled={!createDraft.title.trim() || createMutation.isPending}
+                onClick={() =>
+                  createMutation.mutate({
+                    title: createDraft.title.trim(),
+                    status: createDraft.status,
+                    priority: createDraft.priority,
+                    repo: createDraft.repo,
+                    labels: splitCsv(createDraft.labelsText),
+                    acceptanceCriteria: splitLines(createDraft.acceptanceText),
+                    testPlan: createDraft.testPlan,
+                    description: createDraft.description,
+                  })
+                }
+              >
+                {createMutation.isPending ? 'Creating...' : 'Create Ticket'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={createMutation.isPending}
+                onClick={() => setIsCreateModalOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <section className="panel">
         <h2>Kanban Board</h2>
@@ -485,75 +527,95 @@ function App() {
                 key={status}
                 status={status}
                 tickets={ticketsByStatus.get(status) ?? []}
-                onSelect={setSelectedTicketId}
+                onSelect={openTicketDetails}
               />
             ))}
           </div>
         </DndContext>
       </section>
 
-      <section className="panel two-column">
-        <div>
-          <h2>Dependency Graph</h2>
-          <div className="graph-status">{validateQuery.data?.ok === false ? 'Cycle detected' : 'DAG valid'}</div>
-          {cyclePath.length > 0 && <div className="cycle-path">Cycle: {cyclePath.join(' -> ')}</div>}
-          <ul className="edge-list">
-            {dependencyEdges.map((edge) => (
-              <li key={edge.key} className={edge.inCycle ? 'edge edge-cycle' : 'edge'}>
-                {edge.ticketId} blocked by {edge.blockedById}
-              </li>
-            ))}
-            {dependencyEdges.length === 0 && <li className="edge">No dependencies</li>}
-          </ul>
-        </div>
-        <div>
-          <h2>Orchestrator View</h2>
-          <div className="pick-next">
-            <strong>/pick-next</strong>
-            {pickNextQuery.data?.ticketId ? (
-              <div>
-                <div>Ticket: {pickNextQuery.data.ticketId}</div>
-                <div>Score: {pickNextQuery.data.score}</div>
-                <div>Downstream unlock: {pickNextQuery.data.reasons?.downstreamUnblockedCount ?? 0}</div>
-                <div>Critical depth: {pickNextQuery.data.reasons?.criticalPathDepth ?? 0}</div>
-                <div>Priority: {pickNextQuery.data.reasons?.priority ?? 0}</div>
-              </div>
-            ) : (
-              <div>{pickNextQuery.data?.reason ?? 'none eligible'}</div>
-            )}
-          </div>
-          <div>
-            <strong>/eligible</strong>
-            <ul>
-              {(eligibleQuery.data ?? []).map((ticket) => (
-                <li key={ticket.ticketId}>
-                  {ticket.ticketId} - {ticket.title}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <strong>Simulate Done</strong>
-            <select value={simulateTicketId} onChange={(event) => setSimulateTicketId(event.target.value)}>
-              <option value="">Select ticket</option>
-              {tickets.map((ticket) => (
-                <option key={ticket.id} value={ticket.id}>
-                  {ticket.id}
-                </option>
-              ))}
-            </select>
-            <div>
-              Newly eligible:{' '}
-              {simulatedUnlocks.length > 0 ? simulatedUnlocks.join(', ') : 'none'}
-            </div>
-          </div>
-          <div>
-            Local eligible set: {Array.from(localEligible).join(', ') || 'none'}
-          </div>
+      <section className="panel">
+        <div className="tab-row">
+          <button
+            type="button"
+            className={activeLowerTab === 'insights' ? 'tab-button tab-button-active' : 'tab-button'}
+            onClick={() => setActiveLowerTab('insights')}
+          >
+            Insights
+          </button>
+          <button
+            type="button"
+            className={activeLowerTab === 'details' ? 'tab-button tab-button-active' : 'tab-button'}
+            disabled={!selectedTicket}
+            onClick={() => setActiveLowerTab('details')}
+          >
+            Ticket Detail
+          </button>
         </div>
       </section>
 
-      {selectedTicket && (
+      {activeLowerTab === 'insights' && (
+        <section className="panel two-column">
+          <div>
+            <h2>Dependency Graph</h2>
+            <div className="graph-status">{validateQuery.data?.ok === false ? 'Cycle detected' : 'DAG valid'}</div>
+            {cyclePath.length > 0 && <div className="cycle-path">Cycle: {cyclePath.join(' -> ')}</div>}
+            <ul className="edge-list">
+              {dependencyEdges.map((edge) => (
+                <li key={edge.key} className={edge.inCycle ? 'edge edge-cycle' : 'edge'}>
+                  {edge.ticketId} blocked by {edge.blockedById}
+                </li>
+              ))}
+              {dependencyEdges.length === 0 && <li className="edge">No dependencies</li>}
+            </ul>
+          </div>
+            <div>
+            <h2>Orchestrator View</h2>
+            <div className="pick-next">
+              <strong>/pick-next</strong>
+              {pickNextQuery.data?.ticketId ? (
+                <div>
+                  <div>Ticket: {pickNextQuery.data.ticketId}</div>
+                  <div>Score: {pickNextQuery.data.score}</div>
+                  <div>Downstream unlock: {pickNextQuery.data.reasons?.downstreamUnblockedCount ?? 0}</div>
+                  <div>Critical depth: {pickNextQuery.data.reasons?.criticalPathDepth ?? 0}</div>
+                  <div>Priority: {pickNextQuery.data.reasons?.priority ?? 0}</div>
+                </div>
+              ) : (
+                <div>{pickNextQuery.data?.reason ?? 'none eligible'}</div>
+              )}
+            </div>
+            <div>
+              <strong>/eligible</strong>
+              <ul>
+                {(eligibleQuery.data ?? []).map((ticket) => (
+                  <li key={ticket.ticketId}>
+                    {ticket.ticketId} - {ticket.title}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <strong>Simulate Done</strong>
+              <select value={simulateTicketId} onChange={(event) => setSimulateTicketId(event.target.value)}>
+                <option value="">Select ticket</option>
+                {tickets.map((ticket) => (
+                  <option key={ticket.id} value={ticket.id}>
+                    {ticket.id}
+                  </option>
+                ))}
+              </select>
+              <div>
+                Newly eligible:{' '}
+                {simulatedUnlocks.length > 0 ? simulatedUnlocks.join(', ') : 'none'}
+              </div>
+            </div>
+            <div>Local eligible set: {Array.from(localEligible).join(', ') || 'none'}</div>
+          </div>
+        </section>
+      )}
+
+      {activeLowerTab === 'details' && selectedTicket && (
         <section className="panel">
           <h2>Ticket Detail: {selectedTicket.id}</h2>
           <div className="grid grid-4">
@@ -720,6 +782,12 @@ function App() {
               {(eventsQuery.data ?? []).length === 0 && <li>No events</li>}
             </ul>
           </div>
+        </section>
+      )}
+
+      {activeLowerTab === 'details' && !selectedTicket && (
+        <section className="panel">
+          <div className="empty-state">Select a ticket card to view details.</div>
         </section>
       )}
     </div>

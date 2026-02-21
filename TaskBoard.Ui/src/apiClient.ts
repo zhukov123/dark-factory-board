@@ -8,6 +8,68 @@ import type {
   ValidateResponse,
 } from './types'
 
+interface RawRunDto {
+  ticket_id: string
+  phase: string
+  attempt: number
+  lock_owner: string | null
+  lock_expires_at: string | null
+  branch: string | null
+  pr_number: number | null
+  last_ci_state: string
+  last_summary: string | null
+  last_error: string | null
+  updated_at: string
+}
+
+interface RawTicketDto {
+  id: string
+  title: string
+  status: string
+  priority: number
+  repo: string
+  labels: string[]
+  acceptance_criteria: string[]
+  test_plan: string | null
+  description: string | null
+  created_at: string
+  updated_at: string
+  run: RawRunDto | null
+}
+
+interface RawEligibleTicketDto {
+  ticket_id: string
+  title: string
+  priority: number
+  repo: string
+  blockers: number
+  status: string
+}
+
+interface RawPickNextReasons {
+  downstream_unblocked_count: number
+  critical_path_depth: number
+  priority: number
+  score: number
+  has_active_lock: boolean
+  all_blockers_done: boolean
+}
+
+interface RawPickNextResult {
+  ticket_id: string | null
+  score: number | null
+  reasons: RawPickNextReasons | null
+  reason: string | null
+}
+
+interface RawEventDto {
+  id: number
+  ticket_id: string | null
+  type: string
+  payload: unknown
+  created_at: string
+}
+
 export class ApiError extends Error {
   status: number
   payload: unknown
@@ -66,28 +128,50 @@ export class TaskBoardApiClient {
     if (filters.q) params.set('q', filters.q)
     const suffix = params.size > 0 ? `?${params.toString()}` : ''
 
-    return this.request<TicketDto[]>(`/tickets${suffix}`)
+    const data = await this.request<RawTicketDto[]>(`/tickets${suffix}`)
+    return data.map(mapTicket)
   }
 
   async createTicket(payload: TicketPayload): Promise<TicketDto> {
-    return this.request<TicketDto>('/tickets', {
+    const data = await this.request<RawTicketDto>('/tickets', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        title: payload.title,
+        status: payload.status,
+        priority: payload.priority,
+        repo: payload.repo,
+        labels: payload.labels,
+        acceptance_criteria: payload.acceptanceCriteria,
+        test_plan: payload.testPlan,
+        description: payload.description,
+      }),
     })
+    return mapTicket(data)
   }
 
   async patchTicket(ticketId: string, payload: TicketPatchPayload): Promise<TicketDto> {
-    return this.request<TicketDto>(`/tickets/${ticketId}`, {
+    const data = await this.request<RawTicketDto>(`/tickets/${ticketId}`, {
       method: 'PATCH',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        title: payload.title,
+        status: payload.status,
+        priority: payload.priority,
+        repo: payload.repo,
+        labels: payload.labels,
+        acceptance_criteria: payload.acceptanceCriteria,
+        test_plan: payload.testPlan,
+        description: payload.description,
+      }),
     })
+    return mapTicket(data)
   }
 
   async transitionTicket(ticketId: string, to: string): Promise<TicketDto> {
-    return this.request<TicketDto>(`/tickets/${ticketId}/transition`, {
+    const data = await this.request<RawTicketDto>(`/tickets/${ticketId}/transition`, {
       method: 'POST',
       body: JSON.stringify({ to, note: 'kanban drag', by: 'user', force: false }),
     })
+    return mapTicket(data)
   }
 
   async deleteTicket(ticketId: string): Promise<void> {
@@ -109,12 +193,14 @@ export class TaskBoardApiClient {
 
   async getEligible(repo?: string): Promise<EligibleTicketDto[]> {
     const suffix = repo ? `?repo=${encodeURIComponent(repo)}` : ''
-    return this.request<EligibleTicketDto[]>(`/eligible${suffix}`)
+    const data = await this.request<RawEligibleTicketDto[]>(`/eligible${suffix}`)
+    return data.map(mapEligibleTicket)
   }
 
   async pickNext(repo?: string): Promise<PickNextResult> {
     const suffix = repo ? `?repo=${encodeURIComponent(repo)}` : ''
-    return this.request<PickNextResult>(`/pick-next${suffix}`)
+    const data = await this.request<RawPickNextResult>(`/pick-next${suffix}`)
+    return mapPickNext(data)
   }
 
   async validate(): Promise<ValidateResponse> {
@@ -122,7 +208,10 @@ export class TaskBoardApiClient {
   }
 
   async getEvents(ticketId: string): Promise<EventDto[]> {
-    return this.request<EventDto[]>(`/events?ticket_id=${encodeURIComponent(ticketId)}&limit=50`)
+    const data = await this.request<RawEventDto[]>(
+      `/events?ticket_id=${encodeURIComponent(ticketId)}&limit=50`,
+    )
+    return data.map(mapEvent)
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -157,5 +246,77 @@ async function safeParseJson(response: Response): Promise<unknown> {
     return await response.json()
   } catch {
     return await response.text()
+  }
+}
+
+function mapRun(run: RawRunDto): NonNullable<TicketDto['run']> {
+  return {
+    ticketId: run.ticket_id,
+    phase: run.phase,
+    attempt: run.attempt,
+    lockOwner: run.lock_owner,
+    lockExpiresAt: run.lock_expires_at,
+    branch: run.branch,
+    prNumber: run.pr_number,
+    lastCiState: run.last_ci_state,
+    lastSummary: run.last_summary,
+    lastError: run.last_error,
+    updatedAt: run.updated_at,
+  }
+}
+
+function mapTicket(ticket: RawTicketDto): TicketDto {
+  return {
+    id: ticket.id,
+    title: ticket.title,
+    status: ticket.status as TicketDto['status'],
+    priority: ticket.priority,
+    repo: ticket.repo,
+    labels: ticket.labels,
+    acceptanceCriteria: ticket.acceptance_criteria,
+    testPlan: ticket.test_plan,
+    description: ticket.description,
+    createdAt: ticket.created_at,
+    updatedAt: ticket.updated_at,
+    run: ticket.run ? mapRun(ticket.run) : null,
+  }
+}
+
+function mapEligibleTicket(ticket: RawEligibleTicketDto): EligibleTicketDto {
+  return {
+    ticketId: ticket.ticket_id,
+    title: ticket.title,
+    priority: ticket.priority,
+    repo: ticket.repo,
+    blockers: ticket.blockers,
+    status: ticket.status,
+  }
+}
+
+function mapPickNext(data: RawPickNextResult): PickNextResult {
+  return {
+    ticketId: data.ticket_id,
+    score: data.score,
+    reason: data.reason,
+    reasons: data.reasons
+      ? {
+          downstreamUnblockedCount: data.reasons.downstream_unblocked_count,
+          criticalPathDepth: data.reasons.critical_path_depth,
+          priority: data.reasons.priority,
+          score: data.reasons.score,
+          hasActiveLock: data.reasons.has_active_lock,
+          allBlockersDone: data.reasons.all_blockers_done,
+        }
+      : null,
+  }
+}
+
+function mapEvent(event: RawEventDto): EventDto {
+  return {
+    id: event.id,
+    ticketId: event.ticket_id,
+    type: event.type,
+    payload: event.payload,
+    createdAt: event.created_at,
   }
 }

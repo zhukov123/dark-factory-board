@@ -116,6 +116,16 @@ button.danger {
   border-color: #8f1c1c;
 }
 
+button.secondary {
+  background: #eef3f9;
+  color: #26374a;
+  border-color: #bccada;
+}
+
+button.secondary:hover {
+  background: #e3ebf5;
+}
+
 .error-banner {
   background: #fff4f4;
   border: 1px solid #e4acac;
@@ -200,6 +210,60 @@ button.danger {
 .button-row {
   display: flex;
   gap: 0.5rem;
+}
+
+.tab-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab-button {
+  background: #f2f6fb;
+  color: #2a3b4d;
+  border-color: #c7d3e3;
+}
+
+.tab-button:hover {
+  background: #e8f0fa;
+}
+
+.tab-button-active {
+  background: #17365d;
+  color: #fff;
+  border-color: #17365d;
+}
+
+.tab-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.empty-state {
+  color: #4b5f76;
+  font-size: 0.95rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 32, 52, 0.42);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 20;
+}
+
+.modal-panel {
+  width: min(980px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .token-gate {
