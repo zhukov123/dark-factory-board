@@ -32,17 +32,33 @@ export function simulateDoneUnlocks(
   tickets: TicketDto[],
   blockersByTicket: Record<string, string[]>,
 ): string[] {
-  const locks = new Set<string>()
-  const baseline = computeEligibleIds(tickets, blockersByTicket, locks)
-  const simulatedTickets = tickets.map((ticket) =>
-    ticket.id === doneTicketId ? { ...ticket, status: 'Done' as const } : ticket,
-  )
-  const after = computeEligibleIds(simulatedTickets, blockersByTicket, locks)
+  // Check which non-Done tickets have ALL blockers satisfied, ignoring Ready/Backlog status.
+  // This tells you what becomes "unblocked and ready to queue" when doneTicketId is completed.
+  const isAllBlockersDone = (ticketId: string, byId: Map<string, TicketDto>): boolean =>
+    (blockersByTicket[ticketId] ?? []).every((b) => byId.get(b)?.status === 'Done')
 
-  for (const ticketId of baseline) {
-    after.delete(ticketId)
+  const beforeById = new Map(tickets.map((t) => [t.id, t]))
+  const unlockedBefore = new Set(
+    tickets
+      .filter((t) => t.id !== doneTicketId && t.status !== 'Done')
+      .filter((t) => isAllBlockersDone(t.id, beforeById))
+      .map((t) => t.id),
+  )
+
+  const simulatedTickets = tickets.map((t) =>
+    t.id === doneTicketId ? { ...t, status: 'Done' as const } : t,
+  )
+  const afterById = new Map(simulatedTickets.map((t) => [t.id, t]))
+  const unlockedAfter = new Set(
+    simulatedTickets
+      .filter((t) => t.id !== doneTicketId && t.status !== 'Done')
+      .filter((t) => isAllBlockersDone(t.id, afterById))
+      .map((t) => t.id),
+  )
+
+  for (const ticketId of unlockedBefore) {
+    unlockedAfter.delete(ticketId)
   }
 
-  after.delete(doneTicketId)
-  return Array.from(after).sort((left, right) => left.localeCompare(right))
+  return Array.from(unlockedAfter).sort((left, right) => left.localeCompare(right))
 }
