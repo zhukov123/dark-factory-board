@@ -1,0 +1,28 @@
+# Git and IDE
+.git
+.gitignore
+.claude
+*.md
+Prompt.md
+
+# Build outputs (we build inside the image)
+**/node_modules
+**/dist
+**/out
+**/out-linux
+**/bin
+**/obj
+
+# Local DBs and logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Tests and scripts (not needed in image)
+TaskBoard.Tests
+scripts
+docs
+
+# Misc
+.DS_Store

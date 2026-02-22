@@ -1,0 +1,437 @@
+{
+  "info": {
+    "_postman_id": "9f2f60f6-34d8-4e04-b8d5-7bc2b20f0f61",
+    "name": "TaskBoard API",
+    "description": "TaskBoard orchestration API collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5005" },
+    { "key": "token", "value": "dev-token" },
+    { "key": "repo", "value": "repo-a" },
+    { "key": "ticketId", "value": "T1" },
+    { "key": "owner", "value": "orch-main:agent-1" },
+    { "key": "ttlSeconds", "value": "1800" },
+    { "key": "eventType", "value": "orchestrator.note" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": ["{{baseUrl}}"],
+              "path": ["healthz"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tickets",
+      "item": [
+        {
+          "name": "POST /tickets (create)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Implement login\",\n  \"status\": \"Ready\",\n  \"priority\": 1,\n  \"repo\": \"{{repo}}\",\n  \"labels\": [\"auth\", \"p0\"],\n  \"acceptance_criteria\": [\"User can log in\", \"Session persists\"],\n  \"test_plan\": \"E2E login flow\",\n  \"description\": \"Optional description\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tickets",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('ticketId', json.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tickets/{id}",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}"]
+            }
+          }
+        },
+        {
+          "name": "GET /tickets (list)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets?status=Ready&repo={{repo}}&limit=100&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets"],
+              "query": [
+                { "key": "status", "value": "Ready" },
+                { "key": "repo", "value": "{{repo}}" },
+                { "key": "limit", "value": "100" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /tickets/{id}",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"InProgress\",\n  \"priority\": 2,\n  \"labels\": [\"auth\", \"active\"],\n  \"description\": \"Updated description\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /tickets/{id} (soft delete)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dependencies",
+      "item": [
+        {
+          "name": "GET /tickets/{id}/deps",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/deps",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "deps"]
+            }
+          }
+        },
+        {
+          "name": "GET /deps?ids=T1,T2",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/deps?ids={{ticketId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["deps"],
+              "query": [{ "key": "ids", "value": "{{ticketId}}" }]
+            }
+          }
+        },
+        {
+          "name": "PUT /tickets/{id}/deps (replace blocked_by)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blocked_by\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/deps",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "deps"]
+            }
+          }
+        },
+        {
+          "name": "GET /validate",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/validate",
+              "host": ["{{baseUrl}}"],
+              "path": ["validate"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transitions & Updates",
+      "item": [
+        {
+          "name": "POST /tickets/{id}/transition",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to\": \"InProgress\",\n  \"note\": \"Orchestrator started work\",\n  \"by\": \"orch-main\",\n  \"force\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/transition",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "transition"]
+            }
+          }
+        },
+        {
+          "name": "POST /tickets/{id}/updates",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Started working on ticket\",\n  \"author\": \"agent-1\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/updates",
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "updates"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Runs & Locking",
+      "item": [
+        {
+          "name": "POST /runs/acquire",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ticket_id\": \"{{ticketId}}\",\n  \"owner\": \"{{owner}}\",\n  \"ttl_seconds\": {{ttlSeconds}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/runs/acquire",
+              "host": ["{{baseUrl}}"],
+              "path": ["runs", "acquire"]
+            }
+          }
+        },
+        {
+          "name": "POST /runs/heartbeat",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ticket_id\": \"{{ticketId}}\",\n  \"owner\": \"{{owner}}\",\n  \"ttl_seconds\": {{ttlSeconds}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/runs/heartbeat",
+              "host": ["{{baseUrl}}"],
+              "path": ["runs", "heartbeat"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /runs/{ticketId}",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phase\": \"implement\",\n  \"attempt\": 1,\n  \"branch\": \"feature/{{ticketId}}\",\n  \"pr_number\": 42,\n  \"last_ci_state\": \"pending\",\n  \"last_summary\": \"PR opened\",\n  \"last_error\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/runs/{{ticketId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["runs", "{{ticketId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scheduler",
+      "item": [
+        {
+          "name": "GET /eligible",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/eligible?repo={{repo}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["eligible"],
+              "query": [{ "key": "repo", "value": "{{repo}}" }]
+            }
+          }
+        },
+        {
+          "name": "GET /pick-next",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/pick-next?repo={{repo}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["pick-next"],
+              "query": [{ "key": "repo", "value": "{{repo}}" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Events",
+      "item": [
+        {
+          "name": "POST /events",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ticket_id\": \"{{ticketId}}\",\n  \"type\": \"{{eventType}}\",\n  \"payload\": {\n    \"message\": \"custom event from postman\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            }
+          }
+        },
+        {
+          "name": "GET /events (by ticket)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/events?ticket_id={{ticketId}}&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"],
+              "query": [
+                { "key": "ticket_id", "value": "{{ticketId}}" },
+                { "key": "limit", "value": "50" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /events (filter by type)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/events?type=ticket.update&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"],
+              "query": [
+                { "key": "type", "value": "ticket.update" },
+                { "key": "limit", "value": "50" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

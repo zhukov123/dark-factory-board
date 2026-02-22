@@ -34,6 +34,8 @@ export function TicketModal({
   const [depsDraft, setDepsDraft] = useState<string[]>([])
   const [updateMessage, setUpdateMessage] = useState('')
   const [updateAuthor, setUpdateAuthor] = useState('')
+  const [depsCollapsed, setDepsCollapsed] = useState(true)
+  const [runStateCollapsed, setRunStateCollapsed] = useState(true)
   const backdropRef = useRef<HTMLDivElement>(null)
 
   const selectedDepsQuery = useQuery({
@@ -239,187 +241,226 @@ export function TicketModal({
           </div>
 
           <div className="ticket-modal-right">
-            <div className="modal-section-label">Dependencies</div>
-            <div className="dep-picker">
-              <div className="dep-chips">
-                {depsDraft.length === 0 ? (
-                  <span className="dep-empty">No blockers selected</span>
-                ) : (
-                  depsDraft.map((id) => {
-                    const t = tickets.find((tk) => tk.id === id)
-                    return (
-                      <span key={id} className="dep-chip">
-                        <span className="dep-chip-label">
-                          {id}
-                          {t ? ` — ${t.title}` : ''}
-                        </span>
-                        <button
-                          type="button"
-                          className="dep-chip-remove"
-                          onClick={() => setDepsDraft((c) => c.filter((d) => d !== id))}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    )
-                  })
+            <div className="collapsible-section">
+              <button
+                type="button"
+                className="collapsible-header"
+                onClick={() => setDepsCollapsed((c) => !c)}
+                aria-expanded={!depsCollapsed}
+              >
+                <span className="collapsible-chevron">{depsCollapsed ? '▶' : '▼'}</span>
+                <span>Dependencies</span>
+                {depsDraft.length > 0 && (
+                  <span className="collapsible-badge">{depsDraft.length}</span>
                 )}
-              </div>
-              <div className="dep-list">
-                {tickets
-                  .filter((t) => t.id !== ticket.id)
-                  .map((t) => (
-                    <label key={t.id} className="dep-item">
-                      <input
-                        type="checkbox"
-                        checked={depsDraft.includes(t.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setDepsDraft((c) => [...c, t.id])
-                          } else {
-                            setDepsDraft((c) => c.filter((d) => d !== t.id))
-                          }
-                        }}
-                      />
-                      <span className="dep-item-id">{t.id}</span>
-                      <span className="dep-item-title">{t.title}</span>
-                    </label>
-                  ))}
-              </div>
+              </button>
+              {!depsCollapsed && (
+                <div className="collapsible-content">
+                  <div className="dep-picker">
+                    <div className="dep-chips">
+                      {depsDraft.length === 0 ? (
+                        <span className="dep-empty">No blockers selected</span>
+                      ) : (
+                        depsDraft.map((id) => {
+                          const t = tickets.find((tk) => tk.id === id)
+                          return (
+                            <span key={id} className="dep-chip">
+                              <span className="dep-chip-label">
+                                {id}
+                                {t ? ` — ${t.title}` : ''}
+                              </span>
+                              <button
+                                type="button"
+                                className="dep-chip-remove"
+                                onClick={() => setDepsDraft((c) => c.filter((d) => d !== id))}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          )
+                        })
+                      )}
+                    </div>
+                    <div className="dep-list">
+                      {tickets
+                        .filter((t) => t.id !== ticket.id)
+                        .map((t) => (
+                          <label key={t.id} className="dep-item">
+                            <input
+                              type="checkbox"
+                              checked={depsDraft.includes(t.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setDepsDraft((c) => [...c, t.id])
+                                } else {
+                                  setDepsDraft((c) => c.filter((d) => d !== t.id))
+                                }
+                              }}
+                            />
+                            <span className="dep-item-id">{t.id}</span>
+                            <span className="dep-item-title">{t.title}</span>
+                          </label>
+                        ))}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={depsMutation.isPending}
+                      onClick={() => depsMutation.mutate(depsDraft)}
+                    >
+                      {depsMutation.isPending ? 'Saving…' : 'Save Dependencies'}
+                    </button>
+                  </div>
+                  {(selectedDepsQuery.data?.blocks ?? []).length > 0 && (
+                    <div className="blocks-row">
+                      <span className="blocks-label">Blocks:</span>
+                      <span>{(selectedDepsQuery.data?.blocks ?? []).join(', ')}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="collapsible-section">
               <button
                 type="button"
-                disabled={depsMutation.isPending}
-                onClick={() => depsMutation.mutate(depsDraft)}
+                className="collapsible-header"
+                onClick={() => setRunStateCollapsed((c) => !c)}
+                aria-expanded={!runStateCollapsed}
               >
-                {depsMutation.isPending ? 'Saving…' : 'Save Dependencies'}
+                <span className="collapsible-chevron">{runStateCollapsed ? '▶' : '▼'}</span>
+                <span>Run State</span>
               </button>
-            </div>
-            {(selectedDepsQuery.data?.blocks ?? []).length > 0 && (
-              <div className="blocks-row">
-                <span className="blocks-label">Blocks:</span>
-                <span>{(selectedDepsQuery.data?.blocks ?? []).join(', ')}</span>
-              </div>
-            )}
-
-            <div className="modal-section-label" style={{ marginTop: '1rem' }}>Run State</div>
-            <dl className="run-state-dl">
-              <dt>Phase</dt>
-              <dd>{ticket.run?.phase ?? 'n/a'}</dd>
-              <dt>Attempt</dt>
-              <dd>{ticket.run?.attempt ?? 0}</dd>
-              {ticket.run?.lockOwner && (
-                <>
-                  <dt>Lock Owner</dt>
-                  <dd>{ticket.run.lockOwner}</dd>
-                </>
-              )}
-              {ticket.run?.lockExpiresAt && (
-                <>
-                  <dt>Expires</dt>
-                  <dd>{new Date(ticket.run.lockExpiresAt).toLocaleString()}</dd>
-                </>
-              )}
-              {ticket.run?.branch && (
-                <>
-                  <dt>Branch</dt>
-                  <dd>
-                    <code>{ticket.run.branch}</code>
-                  </dd>
-                </>
-              )}
-              {ticket.run?.prNumber != null && (
-                <>
-                  <dt>PR</dt>
-                  <dd>#{ticket.run.prNumber}</dd>
-                </>
-              )}
-              <dt>CI</dt>
-              <dd>{ticket.run?.lastCiState ?? 'unknown'}</dd>
-              {ticket.run?.lastSummary && (
-                <>
-                  <dt>Summary</dt>
-                  <dd>{ticket.run.lastSummary}</dd>
-                </>
-              )}
-              {ticket.run?.lastError && (
-                <>
-                  <dt>Error</dt>
-                  <dd className="run-error">{ticket.run.lastError}</dd>
-                </>
-              )}
-            </dl>
-
-            <div className="modal-section-label" style={{ marginTop: '1rem' }}>Activity</div>
-            <div className="activity-post">
-              <input
-                type="text"
-                placeholder="Post an update (e.g. Started working, Doing QA, Completed)"
-                value={updateMessage}
-                onChange={(e) => setUpdateMessage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    if (updateMessage.trim()) {
-                      postUpdateMutation.mutate({ message: updateMessage.trim(), author: updateAuthor.trim() || undefined })
-                    }
-                  }
-                }}
-              />
-              <input
-                type="text"
-                className="activity-author"
-                placeholder="Author (optional)"
-                value={updateAuthor}
-                onChange={(e) => setUpdateAuthor(e.target.value)}
-              />
-              <button
-                type="button"
-                disabled={!updateMessage.trim() || postUpdateMutation.isPending}
-                onClick={() => {
-                  if (updateMessage.trim()) {
-                    postUpdateMutation.mutate({ message: updateMessage.trim(), author: updateAuthor.trim() || undefined })
-                  }
-                }}
-              >
-                {postUpdateMutation.isPending ? 'Posting…' : 'Post'}
-              </button>
-            </div>
-            <ul className="activity-list">
-              {(eventsQuery.data ?? []).map((event) => {
-                const payload = event.payload as Record<string, unknown> | null
-                const isUpdate = event.type === 'ticket.update'
-                const message = isUpdate && payload && typeof payload.message === 'string' ? payload.message : null
-                const author = isUpdate && payload && typeof payload.author === 'string' ? payload.author : null
-                return (
-                  <li key={event.id} className="activity-item">
-                    <span className="activity-time">
-                      {new Date(event.createdAt).toLocaleString()}
-                    </span>
-                    {isUpdate && message != null ? (
+              {!runStateCollapsed && (
+                <div className="collapsible-content">
+                  <dl className="run-state-dl">
+                    <dt>Phase</dt>
+                    <dd>{ticket.run?.phase ?? 'n/a'}</dd>
+                    <dt>Attempt</dt>
+                    <dd>{ticket.run?.attempt ?? 0}</dd>
+                    {ticket.run?.lockOwner && (
                       <>
-                        {author && <span className="activity-author-badge">{author}</span>}
-                        <span className="activity-message">{message}</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="activity-type">{event.type}</span>
-                        {event.payload != null &&
-                        typeof event.payload === 'object' &&
-                        Object.keys(event.payload as object).length > 0 ? (
-                          <details className="activity-payload">
-                            <summary>details</summary>
-                            <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                          </details>
-                        ) : null}
+                        <dt>Lock Owner</dt>
+                        <dd>{ticket.run.lockOwner}</dd>
                       </>
                     )}
-                  </li>
-                )
-              })}
-              {(eventsQuery.data ?? []).length === 0 && (
-                <li className="activity-empty">No activity yet. Post an update above.</li>
+                    {ticket.run?.lockExpiresAt && (
+                      <>
+                        <dt>Expires</dt>
+                        <dd>{new Date(ticket.run.lockExpiresAt).toLocaleString()}</dd>
+                      </>
+                    )}
+                    {ticket.run?.branch && (
+                      <>
+                        <dt>Branch</dt>
+                        <dd>
+                          <code>{ticket.run.branch}</code>
+                        </dd>
+                      </>
+                    )}
+                    {ticket.run?.prNumber != null && (
+                      <>
+                        <dt>PR</dt>
+                        <dd>#{ticket.run.prNumber}</dd>
+                      </>
+                    )}
+                    <dt>CI</dt>
+                    <dd>{ticket.run?.lastCiState ?? 'unknown'}</dd>
+                    {ticket.run?.lastSummary && (
+                      <>
+                        <dt>Summary</dt>
+                        <dd>{ticket.run.lastSummary}</dd>
+                      </>
+                    )}
+                    {ticket.run?.lastError && (
+                      <>
+                        <dt>Error</dt>
+                        <dd className="run-error">{ticket.run.lastError}</dd>
+                      </>
+                    )}
+                  </dl>
+                </div>
               )}
-            </ul>
+            </div>
+
+            <section className="activity-section activity-pane-full">
+              <div className="modal-section-label">Activity</div>
+              <div className="activity-post">
+                <input
+                  type="text"
+                  placeholder="Post an update (e.g. Started working, Doing QA, Completed)"
+                  value={updateMessage}
+                  onChange={(e) => setUpdateMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      if (updateMessage.trim()) {
+                        postUpdateMutation.mutate({
+                          message: updateMessage.trim(),
+                          author: updateAuthor.trim() || undefined,
+                        })
+                      }
+                    }
+                  }}
+                />
+                <input
+                  type="text"
+                  className="activity-author"
+                  placeholder="Author (optional)"
+                  value={updateAuthor}
+                  onChange={(e) => setUpdateAuthor(e.target.value)}
+                />
+                <button
+                  type="button"
+                  disabled={!updateMessage.trim() || postUpdateMutation.isPending}
+                  onClick={() => {
+                    if (updateMessage.trim()) {
+                      postUpdateMutation.mutate({
+                        message: updateMessage.trim(),
+                        author: updateAuthor.trim() || undefined,
+                      })
+                    }
+                  }}
+                >
+                  {postUpdateMutation.isPending ? 'Posting…' : 'Post'}
+                </button>
+              </div>
+              <ul className="activity-list">
+                {(eventsQuery.data ?? []).map((event) => {
+                  const payload = event.payload as Record<string, unknown> | null
+                  const isUpdate = event.type === 'ticket.update'
+                  const message = isUpdate && payload && typeof payload.message === 'string' ? payload.message : null
+                  const author = isUpdate && payload && typeof payload.author === 'string' ? payload.author : null
+                  return (
+                    <li key={event.id} className="activity-item">
+                      <span className="activity-time">
+                        {new Date(event.createdAt).toLocaleString()}
+                      </span>
+                      {isUpdate && message != null ? (
+                        <>
+                          {author && <span className="activity-author-badge">{author}</span>}
+                          <span className="activity-message">{message}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="activity-type">{event.type}</span>
+                          {event.payload != null &&
+                          typeof event.payload === 'object' &&
+                          Object.keys(event.payload as object).length > 0 ? (
+                            <details className="activity-payload">
+                              <summary>details</summary>
+                              <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                            </details>
+                          ) : null}
+                        </>
+                      )}
+                    </li>
+                  )
+                })}
+                {(eventsQuery.data ?? []).length === 0 && (
+                  <li className="activity-empty">No activity yet. Post an update above.</li>
+                )}
+              </ul>
+            </section>
           </div>
         </div>
       </div>

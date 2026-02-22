@@ -27,7 +27,9 @@ const EMPTY_DRAFT: TicketDraft = {
 function App() {
   const queryClient = useQueryClient()
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) ?? '')
-  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem(BASE_URL_STORAGE_KEY) ?? '')
+  const [baseUrl, setBaseUrl] = useState(
+    () => localStorage.getItem(BASE_URL_STORAGE_KEY) ?? (typeof window !== 'undefined' ? window.location.origin : ''),
+  )
   const [authInvalid, setAuthInvalid] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)

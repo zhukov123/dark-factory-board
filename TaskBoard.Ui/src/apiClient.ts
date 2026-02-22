@@ -117,7 +117,8 @@ export class TaskBoardApiClient {
 
   constructor(options: ClientOptions) {
     this.token = options.token
-    this.baseUrl = options.baseUrl?.replace(/\/$/, '') ?? ''
+    const explicit = options.baseUrl?.trim().replace(/\/$/, '')
+    this.baseUrl = explicit ?? (typeof window !== 'undefined' ? window.location.origin : '')
     this.onUnauthorized = options.onUnauthorized
   }
 

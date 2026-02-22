@@ -2,7 +2,9 @@
 
 Goal: run TaskBoard so it’s reachable on port 5173 (locally and, if bound to 0.0.0.0, from other machines).
 
-**All scripts assume they run on the server.** You SSH into the host and copy the code there yourself; no SSH or remote commands are used inside the scripts.
+**Docker (recommended):** Build once, send the image to the server, run the container — no code or builds on the server. See [DEPLOY-DOCKER.md](DEPLOY-DOCKER.md).
+
+**Script (build on server):** The rest of this doc describes deploying by copying the repo and running the deploy script on the server. **All scripts assume they run on the server.** You SSH into the host and copy the code there yourself; no SSH or remote commands are used inside the scripts.
 
 ## 1. SSH into the host (you do this manually)
 

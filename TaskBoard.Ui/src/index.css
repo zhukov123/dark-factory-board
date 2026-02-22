@@ -316,8 +316,9 @@ button.secondary:hover:not(:disabled) {
 }
 
 .ticket-button:hover {
-  box-shadow: 0 2px 8px rgba(16, 32, 52, 0.1);
-  background: #f9fbfe;
+  background: #fff;
+  border-color: #1a6fba;
+  box-shadow: 0 0 0 2px rgba(26, 111, 186, 0.25);
 }
 
 .ticket-top-row {
@@ -411,7 +412,7 @@ button.secondary:hover:not(:disabled) {
 /* ─── Ticket detail modal ─────────────────────────────────── */
 
 .ticket-modal {
-  width: min(1100px, 96vw);
+  width: min(1280px, 98vw);
   max-height: 90vh;
   background: #fff;
   border-radius: 14px;
@@ -483,7 +484,7 @@ button.secondary:hover:not(:disabled) {
 
 .ticket-modal-body {
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 480px);
   gap: 0;
   flex: 1;
   overflow: hidden;
@@ -500,11 +501,12 @@ button.secondary:hover:not(:disabled) {
 
 .ticket-modal-right {
   padding: 1.1rem 1.2rem;
-  overflow-y: auto;
-  display: grid;
-  gap: 0.55rem;
-  align-content: start;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   background: #fafcfe;
+  min-height: 0;
 }
 
 .modal-section-label {
@@ -1076,7 +1078,7 @@ button.secondary:hover:not(:disabled) {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.55rem;
 }
 
 .activity-post input[type='text']:first-of-type {
@@ -1118,8 +1120,94 @@ button.secondary:hover:not(:disabled) {
   list-style: none;
   display: grid;
   gap: 0.4rem;
-  max-height: 14rem;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  align-content: start;
+}
+
+.activity-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e4edf5;
+}
+
+.activity-section.activity-pane-full {
+  flex: 1;
+  min-height: 0;
+  margin-top: 0.75rem;
+  padding-top: 0.85rem;
+  border-top: 2px solid #d0dcec;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.activity-section.activity-pane-full .activity-list {
+  flex: 1;
+  min-height: 12rem;
+}
+
+/* ─── Collapsible sections (Dependencies, Run State) ────────── */
+
+.collapsible-section {
+  flex-shrink: 0;
+  border-bottom: 1px solid #e8eef5;
+}
+
+.collapsible-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0;
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #5a6e82;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.collapsible-header:hover {
+  background: #eef3f9;
+  color: #1a2430;
+}
+
+.collapsible-chevron {
+  font-size: 0.6rem;
+  color: #8c99a6;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.collapsible-header:hover .collapsible-chevron {
+  color: #5a6e82;
+}
+
+.collapsible-badge {
+  margin-left: auto;
+  background: #dce8f5;
+  color: #17365d;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.collapsible-content {
+  padding: 0.5rem 0 0.85rem;
+  display: grid;
+  gap: 0.5rem;
 }
 
 .activity-item {
