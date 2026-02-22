@@ -37,9 +37,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseDefaultFiles();
-app.UseStaticFiles();
-
 var protectedSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
     "tickets",
@@ -50,6 +47,21 @@ var protectedSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     "events",
     "deps"
 };
+
+// Only serve static files for non-API paths; otherwise POST /tickets/... hits static middleware and returns 405
+app.UseWhen(
+    context =>
+    {
+        var first = context.Request.Path.Value?
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        return first is null || !protectedSegments.Contains(first);
+    },
+    appBuilder =>
+    {
+        appBuilder.UseDefaultFiles();
+        appBuilder.UseStaticFiles();
+    });
 
 app.Use(async (context, next) =>
 {
@@ -800,6 +812,41 @@ app.MapGet("/validate", async (TaskBoardDbContext db, DagService dagService, Can
     }
 
     return Results.Ok(new { ok = true, cycles = Array.Empty<string[]>() });
+});
+
+app.MapPost("/tickets/{id}/updates", async (string id, PostTicketUpdateRequest request, TaskBoardDbContext db, CancellationToken cancellationToken) =>
+{
+    var ticket = await db.Tickets.SingleOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
+    if (ticket is null)
+    {
+        return Results.NotFound(new { error = "ticket not found" });
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Message))
+    {
+        return Results.BadRequest(new { error = "message is required" });
+    }
+
+    var now = DateTime.UtcNow;
+    var payload = new
+    {
+        message = request.Message.Trim(),
+        author = string.IsNullOrWhiteSpace(request.Author) ? "user" : request.Author.Trim(),
+        at = now
+    };
+
+    var entity = new EventEntity
+    {
+        TicketId = id,
+        Type = "ticket.update",
+        PayloadJson = JsonSerializer.Serialize(payload),
+        CreatedAt = now
+    };
+
+    db.Events.Add(entity);
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Created($"/events/{entity.Id}", DtoMapping.ToEventDto(entity));
 });
 
 app.MapPost("/events", async (CreateEventRequest request, TaskBoardDbContext db, CancellationToken cancellationToken) =>

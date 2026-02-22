@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '^/(tickets|runs|eligible|pick-next|validate|events|healthz)': {
+      '^/(tickets|runs|eligible|pick-next|validate|events|healthz|deps)': {
         target: 'http://localhost:5005',
         changeOrigin: true,
       },

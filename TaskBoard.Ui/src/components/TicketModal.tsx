@@ -32,6 +32,8 @@ export function TicketModal({
     description: ticket.description ?? '',
   })
   const [depsDraft, setDepsDraft] = useState<string[]>([])
+  const [updateMessage, setUpdateMessage] = useState('')
+  const [updateAuthor, setUpdateAuthor] = useState('')
   const backdropRef = useRef<HTMLDivElement>(null)
 
   const selectedDepsQuery = useQuery({
@@ -94,6 +96,16 @@ export function TicketModal({
   const deleteMutation = useMutation({
     mutationFn: () => client.deleteTicket(ticket.id),
     onSuccess: onDeleted,
+    onError: (error) => onError(formatError(error)),
+  })
+
+  const postUpdateMutation = useMutation({
+    mutationFn: (payload: { message: string; author?: string }) =>
+      client.postTicketUpdate(ticket.id, payload.message, payload.author),
+    onSuccess: () => {
+      setUpdateMessage('')
+      void queryClient.invalidateQueries({ queryKey: ['events', ticket.id] })
+    },
     onError: (error) => onError(formatError(error)),
   })
 
@@ -337,28 +349,75 @@ export function TicketModal({
               )}
             </dl>
 
-            <div className="modal-section-label" style={{ marginTop: '1rem' }}>Events</div>
-            <ul className="event-list">
-              {(eventsQuery.data ?? []).map((event) => (
-                <li key={event.id} className="event-item">
-                  <div className="event-header">
-                    <span className="event-type">{event.type}</span>
-                    <span className="event-time">
+            <div className="modal-section-label" style={{ marginTop: '1rem' }}>Activity</div>
+            <div className="activity-post">
+              <input
+                type="text"
+                placeholder="Post an update (e.g. Started working, Doing QA, Completed)"
+                value={updateMessage}
+                onChange={(e) => setUpdateMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    if (updateMessage.trim()) {
+                      postUpdateMutation.mutate({ message: updateMessage.trim(), author: updateAuthor.trim() || undefined })
+                    }
+                  }
+                }}
+              />
+              <input
+                type="text"
+                className="activity-author"
+                placeholder="Author (optional)"
+                value={updateAuthor}
+                onChange={(e) => setUpdateAuthor(e.target.value)}
+              />
+              <button
+                type="button"
+                disabled={!updateMessage.trim() || postUpdateMutation.isPending}
+                onClick={() => {
+                  if (updateMessage.trim()) {
+                    postUpdateMutation.mutate({ message: updateMessage.trim(), author: updateAuthor.trim() || undefined })
+                  }
+                }}
+              >
+                {postUpdateMutation.isPending ? 'Posting…' : 'Post'}
+              </button>
+            </div>
+            <ul className="activity-list">
+              {(eventsQuery.data ?? []).map((event) => {
+                const payload = event.payload as Record<string, unknown> | null
+                const isUpdate = event.type === 'ticket.update'
+                const message = isUpdate && payload && typeof payload.message === 'string' ? payload.message : null
+                const author = isUpdate && payload && typeof payload.author === 'string' ? payload.author : null
+                return (
+                  <li key={event.id} className="activity-item">
+                    <span className="activity-time">
                       {new Date(event.createdAt).toLocaleString()}
                     </span>
-                  </div>
-                  {event.payload != null &&
-                  typeof event.payload === 'object' &&
-                  Object.keys(event.payload as object).length > 0 ? (
-                    <details className="event-payload">
-                      <summary>payload</summary>
-                      <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                    </details>
-                  ) : null}
-                </li>
-              ))}
+                    {isUpdate && message != null ? (
+                      <>
+                        {author && <span className="activity-author-badge">{author}</span>}
+                        <span className="activity-message">{message}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="activity-type">{event.type}</span>
+                        {event.payload != null &&
+                        typeof event.payload === 'object' &&
+                        Object.keys(event.payload as object).length > 0 ? (
+                          <details className="activity-payload">
+                            <summary>details</summary>
+                            <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                          </details>
+                        ) : null}
+                      </>
+                    )}
+                  </li>
+                )
+              })}
               {(eventsQuery.data ?? []).length === 0 && (
-                <li className="event-empty">No events yet</li>
+                <li className="activity-empty">No activity yet. Post an update above.</li>
               )}
             </ul>
           </div>

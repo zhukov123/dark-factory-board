@@ -312,6 +312,25 @@ public sealed class ApiIntegrationTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Post_Ticket_Update_Returns_201_And_Event()
+    {
+        using var factory = new TestAppFactory();
+        using var client = CreateAuthedClient(factory);
+
+        var ticket = await CreateTicketAsync(client, "Update target", "Ready", 1);
+
+        var response = await client.PostAsJsonAsync($"/tickets/{ticket}/updates", new { message = "Started working", author = "agent-1" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("ticket.update", json.RootElement.GetProperty("type").GetString());
+        Assert.Equal(ticket, json.RootElement.GetProperty("ticket_id").GetString());
+        var payload = json.RootElement.GetProperty("payload");
+        Assert.Equal("Started working", payload.GetProperty("message").GetString());
+        Assert.Equal("agent-1", payload.GetProperty("author").GetString());
+    }
+
     private static HttpClient CreateAuthedClient(TestAppFactory factory)
     {
         var client = factory.CreateClient();

@@ -1,6 +1,7 @@
 import { chromium } from 'playwright'
 
-const baseUrl = 'http://localhost:5005'
+const apiBaseUrl = 'http://localhost:5005'
+const uiBaseUrl = 'http://localhost:5173' // Vite dev server when using run-dev.sh
 const token = 'dev-token'
 const runId = Date.now()
 const titleOne = `E2E ${runId} A`
@@ -25,7 +26,7 @@ async function poll(check, description, timeoutMs = 15000, intervalMs = 300) {
 }
 
 async function api(path, init = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -50,14 +51,16 @@ async function api(path, init = {}) {
 }
 
 async function findTicketByTitle(title) {
-  const result = await api(`/tickets?q=${encodeURIComponent(title)}`)
-  return result.find((ticket) => ticket.title === title) ?? null
+  const result = await api(`/tickets?q=${encodeURIComponent(title)}&limit=50`)
+  const items = result.items ?? result
+  const list = Array.isArray(items) ? items : []
+  return list.find((ticket) => ticket.title === title) ?? null
 }
 
 async function dragTicketToStatus(page, ticketId, status) {
   const source = page
     .locator('.ticket-card')
-    .filter({ has: page.locator('.ticket-button', { hasText: `${ticketId}:` }) })
+    .filter({ has: page.locator('.ticket-button', { hasText: new RegExp(`^${ticketId}\\b`) }) })
     .first()
   await source.waitFor({ state: 'visible', timeout: 10000 })
   await source.scrollIntoViewIfNeeded()
@@ -112,7 +115,7 @@ async function openTicketDetail(page, ticketId, searchText) {
     await searchInput.fill(searchText)
     await page.waitForTimeout(300)
 
-    const button = page.locator('.ticket-button', { hasText: `${ticketId}:` }).first()
+    const button = page.locator('.ticket-button', { hasText: new RegExp(`^${ticketId}\\b`) }).first()
     await button.waitFor({ state: 'visible', timeout: 10000 })
     await button.evaluate((element) => {
       element.click()
@@ -135,17 +138,25 @@ async function main() {
   await context.addInitScript(
     ({ providedToken }) => {
       localStorage.setItem('taskboard_token', providedToken)
-      localStorage.setItem('taskboard_api_base_url', '')
+      localStorage.setItem('taskboard_api_base_url', '') // same origin = Vite proxy to API
     },
     { providedToken: token },
   )
 
   const page = await context.newPage()
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
+  await page.goto(uiBaseUrl, { waitUntil: 'networkidle' })
+  await page.evaluate((t) => {
+    localStorage.setItem('taskboard_token', t)
+    localStorage.setItem('taskboard_api_base_url', '')
+  }, token)
+  await page.reload({ waitUntil: 'networkidle' })
   await page.locator('h1', { hasText: 'TaskBoard' }).first().waitFor({ timeout: 10000 })
+  await page.locator('.kanban-column').first().waitFor({ state: 'visible', timeout: 10000 })
 
-  const createSection = page.locator('section.panel').filter({ has: page.locator('h2', { hasText: 'Create Ticket' }) })
-  const createButton = createSection.getByRole('button', { name: 'Create Ticket' })
+  await page.getByRole('button', { name: '+ New Ticket' }).click()
+  const createSection = page.locator('section.panel').filter({ has: page.locator('h2', { hasText: 'New Ticket' }) })
+  await createSection.waitFor({ state: 'visible', timeout: 5000 })
+  const createButton = createSection.getByRole('button', { name: 'Create' })
 
   await createSection.getByLabel('Title').fill(titleOne)
   await createSection.getByLabel('Status').selectOption('Backlog')
@@ -153,8 +164,10 @@ async function main() {
   await createSection.getByLabel('Repo').fill('repo-e2e')
   await poll(async () => createButton.isEnabled(), 'create button enabled for first ticket')
   await createButton.click()
-  await poll(async () => (await createSection.getByLabel('Title').inputValue()) === '', 'first create mutation completed')
+  await poll(async () => (await findTicketByTitle(titleOne)) !== null, 'first ticket created via API')
 
+  await page.getByRole('button', { name: '+ New Ticket' }).click()
+  await createSection.waitFor({ state: 'visible', timeout: 5000 })
   await createSection.getByLabel('Title').fill(titleTwo)
   await createSection.getByLabel('Status').selectOption('Ready')
   await createSection.getByLabel('Priority').fill('5')
@@ -175,6 +188,18 @@ async function main() {
     throw new Error('Could not resolve created ticket ids')
   }
 
+  await page.locator('.kanban-column').first().scrollIntoViewIfNeeded().catch(() => {})
+  await page.waitForTimeout(1000)
+  await poll(
+    async () => {
+      const card = page.locator('.ticket-card').filter({
+        has: page.locator('.ticket-button', { hasText: new RegExp(`^${ticketOne.id}\\b`) }),
+      }).first()
+      return (await card.count()) > 0 && (await card.isVisible())
+    },
+    'ticket one card visible on board',
+    20000,
+  )
   await dragTicketToStatus(page, ticketOne.id, 'Ready')
 
   await poll(async () => {
@@ -190,6 +215,21 @@ async function main() {
     const current = await api(`/tickets/${ticketOne.id}`)
     return current.title === updatedTitleOne
   }, 'ticket one title updated')
+
+  // Post a ticket update (activity) and verify it appears
+  const activityInput = detailSection.locator('.activity-post input[type="text"]').first()
+  await activityInput.waitFor({ state: 'visible', timeout: 5000 })
+  await activityInput.fill('Started working')
+  await detailSection.getByRole('button', { name: 'Post' }).click()
+  await poll(
+    async () => {
+      const events = await api(`/events?ticket_id=${encodeURIComponent(ticketOne.id)}&limit=50`)
+      return events.some((e) => e.type === 'ticket.update' && e.payload?.message === 'Started working')
+    },
+    'ticket update event persisted via API',
+  )
+  await page.waitForTimeout(500)
+  await detailSection.locator('.activity-message', { hasText: 'Started working' }).waitFor({ state: 'visible', timeout: 5000 })
 
   const secondDetailSection = await openTicketDetail(page, ticketTwo.id, titleTwo)
   const filtersSection = page

@@ -240,6 +240,14 @@ export class TaskBoardApiClient {
     return data.map(mapEvent)
   }
 
+  async postTicketUpdate(ticketId: string, message: string, author?: string): Promise<EventDto> {
+    const data = await this.request<RawEventDto>(`/tickets/${ticketId}/updates`, {
+      method: 'POST',
+      body: JSON.stringify({ message, author: author ?? undefined }),
+    })
+    return mapEvent(data)
+  }
+
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
@@ -268,10 +276,12 @@ export class TaskBoardApiClient {
 }
 
 async function safeParseJson(response: Response): Promise<unknown> {
+  const text = await response.text()
+  if (!text.trim()) return null
   try {
-    return await response.json()
+    return JSON.parse(text)
   } catch {
-    return await response.text()
+    return text
   }
 }
 

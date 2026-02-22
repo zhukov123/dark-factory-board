@@ -41,6 +41,8 @@ public sealed record PatchRunRequest(
 
 public sealed record CreateEventRequest(string? TicketId, string Type, object? Payload);
 
+public sealed record PostTicketUpdateRequest(string Message, string? Author);
+
 public sealed record TicketDto(
     string Id,
     string Title,

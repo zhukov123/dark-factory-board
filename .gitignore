@@ -7,3 +7,11 @@ TaskBoard.Api/*.db-shm
 TaskBoard.Api/*.db-wal
 .vs/
 .DS_Store
+
+# Publish output
+out/
+out-linux/
+
+# Vite build artifacts (hashed assets copied to API wwwroot)
+TaskBoard.Api/wwwroot/assets/index-*.js
+TaskBoard.Api/wwwroot/assets/index-*.css
