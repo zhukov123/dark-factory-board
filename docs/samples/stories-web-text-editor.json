@@ -1,0 +1,215 @@
+[
+  {
+    "title": "T-ED-1: Project Scaffolding & Dev Environment Setup",
+    "status": "Backlog",
+    "priority": 1,
+    "repo": "web-text-editor",
+    "labels": ["infra", "setup", "editor"],
+    "description": "Bootstrap the web-based text editor project using Vite + React 19 + TypeScript. Configure Tailwind CSS for styling, Vitest for unit tests, and Playwright for E2E tests. Set up the project structure with placeholder components and a working dev server.\n\n## Technical Details\n\n- Initialize with `npm create vite@latest` using the react-ts template\n- Install and configure Tailwind CSS v4 with PostCSS\n- Install Vitest with React Testing Library and jsdom environment\n- Install Playwright with chromium browser\n- Create directory structure:\n  ```\n  src/\n    components/    # React components\n    hooks/         # Custom hooks\n    context/       # React context providers\n    lib/           # Utilities, types, constants\n    styles/        # Global styles\n  ```\n- Create `<App>` shell component rendering a centered placeholder\n- Add npm scripts: `dev`, `build`, `preview`, `test`, `test:e2e`\n- Add a basic Playwright test that loads the app and asserts the shell renders\n- Add a `.env.example` with any needed variables\n- Dockerfile for containerized dev (optional stretch)",
+    "acceptance_criteria": [
+      "Running `npm run dev` starts the Vite dev server and renders the App shell in a browser",
+      "Running `npm run build` produces a production bundle with zero errors",
+      "Running `npm test` executes Vitest and at least one passing unit test exists",
+      "Running `npm run test:e2e` executes Playwright and at least one passing E2E test exists",
+      "Tailwind CSS utility classes are functional in components",
+      "TypeScript strict mode is enabled with no type errors",
+      "Directory structure matches the specification"
+    ],
+    "test_plan": "1. Clone the repo and run `npm install` — verify no dependency errors\n2. Run `npm run dev` — verify the dev server starts and the browser shows the App shell\n3. Run `npm run build` — verify a clean production build\n4. Run `npm test` — verify Vitest runs and the placeholder test passes\n5. Run `npm run test:e2e` — verify Playwright loads the app and the smoke test passes\n6. Open a component file, add a Tailwind class, verify it renders correctly\n7. Introduce a type error in a .tsx file, verify `tsc --noEmit` catches it"
+  },
+  {
+    "title": "T-ED-2: Core Editor Component with Tiptap",
+    "status": "Backlog",
+    "priority": 1,
+    "repo": "web-text-editor",
+    "labels": ["editor", "core", "tiptap"],
+    "description": "Integrate Tiptap v2 as the editor engine. Create the `<EditorCanvas>` component using the `useEditor` hook with a baseline set of extensions. Create the `<EditorProvider>` context to manage editor state across the app. The editor should accept and render rich text content with basic nodes (paragraphs, headings, lists).\n\n## Technical Details\n\n- Install: `@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/pm`\n- Create `EditorCanvas.tsx`:\n  - Uses `useEditor` with StarterKit (includes paragraph, heading, bold, italic, strike, code, blockquote, bullet list, ordered list, horizontal rule, hard break)\n  - Renders `<EditorContent editor={editor} />` inside a styled container\n  - Editor area should have comfortable padding, max-width of ~720px, centered on page\n  - Typography styles: proper font sizes for h1-h3, paragraph line height, list indentation\n- Create `EditorProvider.tsx` (React context):\n  - Holds `EditorDocument[]`, `activeDocId`, exposes `createDocument`, `setActiveDoc`, `updateContent`\n  - On mount, creates one default untitled document\n- Create `StatusBar.tsx`:\n  - Displays word count (computed from editor text content)\n  - Displays character count\n  - Displays current cursor line/column position\n- Wire `<App>` to render `<EditorProvider>` > `<EditorCanvas>` > `<StatusBar>`\n- Editor content area should have a clean white background with subtle border/shadow",
+    "acceptance_criteria": [
+      "The editor renders in the browser and accepts typed text input",
+      "Paragraphs are created on Enter, line breaks on Shift+Enter",
+      "StarterKit nodes render correctly: headings, bold, italic, strikethrough, code, blockquotes, bullet lists, ordered lists, horizontal rules",
+      "Status bar shows live word count and character count that update as the user types",
+      "Status bar shows cursor line and column position",
+      "EditorProvider context is accessible from child components",
+      "A default untitled document is created on app load",
+      "Editor area is styled with proper typography and centered layout"
+    ],
+    "test_plan": "1. Load the app — verify the editor canvas renders with a blinking cursor\n2. Type text — verify characters appear and word/character counts update in the status bar\n3. Press Enter — verify a new paragraph is created\n4. Press Shift+Enter — verify a line break (not new paragraph) is created\n5. Select text and apply bold/italic via ProseMirror commands — verify formatting renders\n6. Verify EditorProvider context holds the default document with correct initial state\n7. Unit test: EditorProvider creates a document on mount with expected shape\n8. Unit test: word count utility returns correct count for sample text"
+  },
+  {
+    "title": "T-ED-3: Rich Text Formatting Toolbar",
+    "status": "Backlog",
+    "priority": 2,
+    "repo": "web-text-editor",
+    "labels": ["editor", "toolbar", "ui"],
+    "description": "Build the `<Toolbar>` component with formatting buttons that drive the Tiptap editor. Buttons should reflect active state (e.g., Bold button is highlighted when cursor is in bold text). The toolbar should be responsive and visually clean.\n\n## Technical Details\n\n- Create `Toolbar.tsx` with grouped formatting buttons:\n  - **Text**: Bold, Italic, Underline (add `@tiptap/extension-underline`), Strikethrough\n  - **Headings**: H1, H2, H3 (dropdown or toggle buttons)\n  - **Lists**: Bullet list, Ordered list\n  - **Blocks**: Blockquote, Code block, Horizontal rule\n  - **Insert**: Link (add `@tiptap/extension-link` — prompts for URL)\n- Each button:\n  - Calls the corresponding Tiptap chain command (e.g., `editor.chain().focus().toggleBold().run()`)\n  - Uses `editor.isActive('bold')` to toggle active styling\n  - Has a tooltip showing the action name and shortcut hint\n  - Is disabled when the command cannot be executed (`editor.can()...`)\n- Toolbar layout:\n  - Horizontal bar pinned below the tab bar\n  - Buttons grouped by category with subtle dividers\n  - Uses icon-based buttons (use simple SVG icons or a lightweight icon set)\n  - Active state: highlighted background, pressed appearance\n  - Disabled state: reduced opacity\n- Link insertion: clicking the link button opens a small popover/modal to enter URL, with the selected text as the link text",
+    "acceptance_criteria": [
+      "Toolbar renders with all specified formatting buttons grouped logically",
+      "Clicking Bold toggles bold on selected text or at cursor position",
+      "Clicking Italic toggles italic on selected text or at cursor position",
+      "Clicking Underline toggles underline on selected text or at cursor position",
+      "Heading buttons (H1, H2, H3) toggle the current paragraph to the corresponding heading level",
+      "List buttons toggle bullet list and ordered list",
+      "Blockquote button wraps/unwraps the current block",
+      "Code block button toggles a code block",
+      "Horizontal rule button inserts a horizontal rule at cursor",
+      "Link button opens a URL input and creates a link on the selected text",
+      "Active formatting is visually indicated on the toolbar buttons",
+      "Disabled buttons have reduced opacity and are not clickable",
+      "Each button shows a tooltip with action name and keyboard shortcut"
+    ],
+    "test_plan": "1. Load the app — verify all toolbar buttons render with icons\n2. Select text, click Bold — verify text becomes bold and button shows active state\n3. Click Bold again — verify bold is removed and button returns to inactive\n4. Repeat for Italic, Underline, Strikethrough\n5. Click H1 with cursor in a paragraph — verify it becomes a heading\n6. Click H1 again — verify it reverts to a paragraph\n7. Click Bullet List — verify a bullet list is created\n8. Click Link, enter a URL — verify the selected text becomes a hyperlink\n9. Place cursor outside formatted text — verify active states clear\n10. Hover over buttons — verify tooltips appear\n11. Unit test: Toolbar renders correct number of buttons\n12. E2E test: click Bold, verify text element has bold styling"
+  },
+  {
+    "title": "T-ED-4: Markdown Serialization (Import/Export)",
+    "status": "Backlog",
+    "priority": 2,
+    "repo": "web-text-editor",
+    "labels": ["editor", "markdown", "serialization"],
+    "description": "Add bidirectional Markdown conversion so documents can be loaded from and saved as Markdown. This is the internal storage format — all document persistence uses Markdown strings as the source of truth.\n\n## Technical Details\n\n- Install `tiptap-markdown` extension for bidirectional conversion\n- Configure the Markdown extension on the editor:\n  - `html: false` (strict Markdown, no raw HTML)\n  - `transformPastedText: true` (pasting Markdown renders as rich text)\n  - `transformCopiedText: true` (copying from editor produces Markdown)\n- Create utility functions in `src/lib/markdown.ts`:\n  - `getMarkdown(editor: Editor): string` — serializes current editor content to Markdown\n  - `setMarkdown(editor: Editor, markdown: string): void` — loads Markdown into the editor\n- Update `EditorProvider`:\n  - Store document content as Markdown string in state\n  - On editor `update` event: serialize to Markdown, update document state\n  - On active document change: load the document's Markdown into the editor\n- Handle round-trip fidelity for:\n  - Headings (h1-h3 via `#`, `##`, `###`)\n  - Bold (`**text**`), Italic (`*text*`), Strikethrough (`~~text~~`)\n  - Inline code (`` `code` ``), Code blocks (``` ``` ```)\n  - Bullet lists (`- item`), Ordered lists (`1. item`)\n  - Blockquotes (`> text`)\n  - Links (`[text](url)`)\n  - Horizontal rules (`---`)\n- Clipboard behavior: pasting Markdown from external sources renders as formatted rich text",
+    "acceptance_criteria": [
+      "getMarkdown() returns valid Markdown for all supported node types",
+      "setMarkdown() correctly loads Markdown and renders as rich text in the editor",
+      "Round-trip test: Markdown → editor → Markdown produces equivalent output for all supported elements",
+      "Pasting Markdown text from clipboard renders as formatted rich text (not literal asterisks)",
+      "Copying formatted text from the editor produces Markdown in the clipboard",
+      "Document state stores content as Markdown strings",
+      "Switching between documents preserves each document's Markdown content"
+    ],
+    "test_plan": "1. Call setMarkdown with sample Markdown containing headings, lists, bold, code — verify editor renders all elements correctly\n2. Edit content in the editor, call getMarkdown — verify output is well-formed Markdown\n3. Round-trip test: load sample.md → getMarkdown → compare with original (structural equivalence)\n4. Paste raw Markdown text (`**bold** and *italic*`) into the editor — verify it renders as bold and italic, not literal asterisks\n5. Select formatted text, copy, paste into a plain text field — verify Markdown syntax is in clipboard\n6. Unit tests for getMarkdown covering each node type\n7. Unit tests for setMarkdown covering each node type\n8. Regression test: load a complex Markdown document, make no changes, export — verify no drift"
+  },
+  {
+    "title": "T-ED-5: File Operations (New / Open / Save / Save As)",
+    "status": "Backlog",
+    "priority": 3,
+    "repo": "web-text-editor",
+    "labels": ["editor", "file-ops", "ui"],
+    "description": "Implement file operations for creating, opening, and saving documents. Use the File System Access API where available (Chromium browsers) with fallback to traditional file input and download for other browsers.\n\n## Technical Details\n\n- Create `src/lib/file-system.ts` with platform-abstracted file operations:\n  - `openFile(): Promise<{ name: string; content: string } | null>` — opens file picker, reads text content\n  - `saveFile(content: string, suggestedName: string, existingHandle?: FileSystemFileHandle): Promise<FileSystemFileHandle | null>` — saves to disk\n  - `saveFileAs(content: string, suggestedName: string): Promise<FileSystemFileHandle | null>` — always prompts for location\n  - Detect File System Access API support: `'showOpenFilePicker' in window`\n  - Fallback: `<input type=\"file\">` for open, programmatic `<a download>` for save\n- Create `<FileDialog>` component (optional, for save-before-close confirmation):\n  - \"You have unsaved changes. Save before closing?\" with Save / Don't Save / Cancel\n- Update `EditorProvider` with new actions:\n  - `newDocument()` — creates untitled doc, switches to it\n  - `openDocument()` — calls openFile, creates doc from content, switches to it\n  - `saveDocument(docId?)` — saves active (or specified) doc via saveFile\n  - `saveDocumentAs(docId?)` — saves via saveFileAs\n  - Track file handle per document (for subsequent saves without re-prompting)\n- Add a minimal menu/action bar or integrate into the toolbar:\n  - New, Open, Save, Save As buttons or a File dropdown menu\n- Update `isDirty` flag: set true on edit, clear on save\n- Status bar: show document title and dirty indicator (dot or asterisk)",
+    "acceptance_criteria": [
+      "Clicking New creates a new untitled document and switches the editor to it",
+      "Clicking Open shows a file picker, loads the selected .md or .txt file into a new document",
+      "Clicking Save writes the current document to disk as Markdown",
+      "If the document was previously opened or saved, Save writes to the same file without re-prompting",
+      "Clicking Save As always prompts for a file location",
+      "On browsers without File System Access API, Open uses a file input and Save triggers a download",
+      "The dirty indicator shows when a document has unsaved changes",
+      "The dirty indicator clears after a successful save",
+      "Attempting to close a dirty document shows a save confirmation dialog",
+      "The document title in the status bar reflects the filename"
+    ],
+    "test_plan": "1. Click New — verify a new tab appears with 'Untitled' title and empty editor\n2. Click Open, select a .md file — verify content loads and renders correctly\n3. Type in the editor — verify dirty indicator appears\n4. Click Save — verify the file is written (or downloaded in fallback mode)\n5. After Save — verify dirty indicator clears\n6. Edit again, click Save — verify it saves to the same file without re-prompting (File System Access API)\n7. Click Save As — verify a new file location can be chosen\n8. Unit test: openFile returns correct name and content from a mock file\n9. Unit test: saveFile calls the appropriate API with correct content\n10. E2E test: full open → edit → save flow"
+  },
+  {
+    "title": "T-ED-6: Keyboard Shortcuts",
+    "status": "Backlog",
+    "priority": 3,
+    "repo": "web-text-editor",
+    "labels": ["editor", "keyboard", "ux"],
+    "description": "Implement comprehensive keyboard shortcuts for formatting, file operations, and navigation. Shortcuts should follow platform conventions (Ctrl on Windows/Linux, Cmd on macOS) and not conflict with browser defaults.\n\n## Technical Details\n\n- Tiptap already handles basic formatting shortcuts from StarterKit (bold, italic, strike). Verify these work and add missing ones.\n- Create `src/hooks/useKeyboardShortcuts.ts`:\n  - Registers document-level keyboard event listeners\n  - Maps shortcuts to EditorProvider actions and editor commands\n  - Detects platform (Mac vs other) for modifier key display\n- Shortcut map:\n  - **Formatting** (handled by Tiptap extensions, verify/configure):\n    - `Mod+B` → Bold\n    - `Mod+I` → Italic\n    - `Mod+U` → Underline\n    - `Mod+Shift+X` → Strikethrough\n    - `Mod+E` → Inline code\n    - `Mod+Shift+1/2/3` → Heading 1/2/3\n    - `Mod+Shift+8` → Bullet list\n    - `Mod+Shift+9` → Ordered list\n    - `Mod+Shift+B` → Blockquote\n    - `Mod+Shift+E` → Code block\n  - **File operations** (custom, via useKeyboardShortcuts):\n    - `Mod+N` → New document\n    - `Mod+O` → Open file\n    - `Mod+S` → Save\n    - `Mod+Shift+S` → Save As\n    - `Mod+W` → Close tab\n  - **Navigation**:\n    - `Mod+Tab` / `Mod+Shift+Tab` → Next/previous tab\n  - **Search**:\n    - `Mod+F` → Open search\n    - `Mod+H` → Open search & replace\n    - `Escape` → Close search panel\n- Prevent browser default for overridden shortcuts (e.g., Ctrl+S should not trigger browser save dialog)\n- Update toolbar button tooltips to show the correct platform-specific shortcut",
+    "acceptance_criteria": [
+      "Ctrl/Cmd+B toggles bold at cursor or on selection",
+      "Ctrl/Cmd+I toggles italic at cursor or on selection",
+      "Ctrl/Cmd+U toggles underline at cursor or on selection",
+      "Ctrl/Cmd+S saves the current document (does not trigger browser save dialog)",
+      "Ctrl/Cmd+N creates a new document (does not trigger browser new window)",
+      "Ctrl/Cmd+O opens the file picker (does not trigger browser open file)",
+      "Ctrl/Cmd+W closes the current tab (does not close the browser tab)",
+      "Ctrl/Cmd+F opens the search panel",
+      "Ctrl/Cmd+H opens the search & replace panel",
+      "Escape closes the search panel when it is open",
+      "Ctrl/Cmd+Tab cycles to the next document tab",
+      "Toolbar tooltips show platform-correct shortcuts (Cmd on Mac, Ctrl on others)",
+      "All shortcuts work in both the editor focus and document focus contexts"
+    ],
+    "test_plan": "1. Focus the editor, press Ctrl/Cmd+B — verify bold toggles\n2. Press Ctrl/Cmd+S — verify save is triggered and browser save dialog does NOT appear\n3. Press Ctrl/Cmd+N — verify new document is created and browser new window does NOT open\n4. Press Ctrl/Cmd+O — verify file picker opens\n5. Press Ctrl/Cmd+W — verify the current tab closes and the browser tab does NOT close\n6. Press Ctrl/Cmd+F — verify search panel opens\n7. Press Escape — verify search panel closes\n8. Open multiple tabs, press Ctrl/Cmd+Tab — verify focus cycles to next tab\n9. Verify tooltips show 'Cmd' on macOS and 'Ctrl' on other platforms\n10. E2E test: simulate Ctrl+B keypress, verify bold formatting applied"
+  },
+  {
+    "title": "T-ED-7: Multi-Tab Document Management",
+    "status": "Backlog",
+    "priority": 4,
+    "repo": "web-text-editor",
+    "labels": ["editor", "tabs", "ui"],
+    "description": "Implement a tab bar that supports multiple simultaneously open documents. Users can switch between tabs, close tabs (with unsaved-changes protection), reorder tabs via drag-and-drop, and create new documents from the tab bar.\n\n## Technical Details\n\n- Create `TabBar.tsx`:\n  - Renders a horizontal scrollable tab strip\n  - Each tab shows: document title (or 'Untitled'), dirty indicator (dot), close button (×)\n  - Active tab is visually distinct (background, border, or underline)\n  - '+' button at the end to create a new document\n  - Tabs are scrollable if they overflow the container width\n- Tab interactions:\n  - Click tab → switch active document (preserving scroll/cursor position in each doc)\n  - Click × → close tab (with dirty-check dialog if unsaved)\n  - Middle-click tab → close tab\n  - Drag tab → reorder (use native HTML drag or a lightweight library)\n  - Double-click tab title → rename document\n- Update `EditorProvider`:\n  - `closeDocument(docId)` — removes from state, switches to adjacent tab\n  - `reorderDocuments(fromIndex, toIndex)` — updates document array order\n  - `renameDocument(docId, newTitle)` — updates title\n  - Preserve editor state (scroll position, selection) per document when switching\n- Edge cases:\n  - Closing the last tab creates a new untitled document (app never has zero tabs)\n  - Opening a file that is already open switches to its existing tab\n  - Tab title truncation for long filenames with tooltip showing full name",
+    "acceptance_criteria": [
+      "Tab bar renders with one tab on initial load",
+      "Clicking the '+' button creates a new tab with an untitled document",
+      "Clicking a tab switches the editor to that document's content",
+      "Switching tabs preserves each document's content, scroll position, and cursor",
+      "The active tab is visually distinct from inactive tabs",
+      "Clicking the × button on a clean tab closes it immediately",
+      "Clicking the × button on a dirty tab shows a save confirmation dialog",
+      "Closing the last tab creates a new untitled document",
+      "Tabs can be reordered via drag-and-drop",
+      "Double-clicking a tab title allows renaming",
+      "Long tab titles are truncated with a tooltip showing the full name",
+      "Opening a file already open in a tab switches to that tab instead of creating a duplicate"
+    ],
+    "test_plan": "1. Load the app — verify one tab appears\n2. Click '+' three times — verify three new tabs appear\n3. Click each tab — verify editor content switches correctly\n4. Type different text in each tab, switch between them — verify content is preserved\n5. Click × on a clean tab — verify it closes and adjacent tab activates\n6. Click × on a dirty tab — verify the save dialog appears\n7. Close all tabs — verify a new untitled tab is created automatically\n8. Drag a tab to a new position — verify tabs reorder\n9. Double-click a tab title, type a new name — verify it updates\n10. Open the same file twice — verify no duplicate tab is created\n11. Create many tabs — verify horizontal scrolling works\n12. E2E test: create 3 tabs, type in each, switch and verify content"
+  },
+  {
+    "title": "T-ED-8: Search and Replace",
+    "status": "Backlog",
+    "priority": 4,
+    "repo": "web-text-editor",
+    "labels": ["editor", "search", "ux"],
+    "description": "Implement a search and replace panel that allows users to find text in the current document, navigate between matches, and replace single or all occurrences.\n\n## Technical Details\n\n- Install `@tiptap/extension-search-and-replace` or implement using ProseMirror's `prosemirror-search` / custom decoration plugin:\n  - If no maintained Tiptap extension exists, implement a custom ProseMirror plugin that:\n    - Scans document for query matches\n    - Applies highlight decorations to all matches\n    - Tracks current match index for navigation\n- Create `SearchPanel.tsx`:\n  - Slide-down panel anchored to the top-right of the editor area (similar to VS Code)\n  - Search input field with match count display (e.g., '3 of 12')\n  - Up/down navigation buttons to cycle through matches\n  - Replace input field (shown when in replace mode)\n  - Replace and Replace All buttons\n  - Case-sensitive toggle button\n  - Close button (×)\n- Search behavior:\n  - Real-time search as the user types in the search field (debounced 200ms)\n  - Current match is highlighted differently from other matches (e.g., orange vs yellow)\n  - Editor scrolls to show the current match\n  - Wraps around at document boundaries\n- Replace behavior:\n  - Replace: replaces current match and advances to next\n  - Replace All: replaces all matches at once, shows count of replacements\n- Update `EditorProvider` with `searchState` management\n- Keyboard integration:\n  - Enter in search field → next match\n  - Shift+Enter in search field → previous match\n  - Escape → close panel, clear highlights",
+    "acceptance_criteria": [
+      "Ctrl/Cmd+F opens the search panel with the search input focused",
+      "Typing in the search field highlights all matches in the document in real-time",
+      "Match count displays correctly (e.g., '3 of 12 matches')",
+      "Up/down buttons cycle through matches, scrolling the editor to each one",
+      "The current match has a distinct highlight color from other matches",
+      "Search wraps from the last match back to the first (and vice versa)",
+      "Ctrl/Cmd+H opens the panel in replace mode with both fields visible",
+      "Replace button replaces the current match and advances to the next",
+      "Replace All button replaces all matches and shows the count replaced",
+      "Case-sensitive toggle changes search behavior",
+      "Escape closes the panel and clears all match highlights",
+      "Enter in search field navigates to the next match",
+      "The panel does not cover or obstruct the editor content at the current scroll position"
+    ],
+    "test_plan": "1. Press Ctrl/Cmd+F — verify search panel slides open with focus in search input\n2. Type a word that appears multiple times — verify all instances are highlighted\n3. Verify the match counter shows correct numbers\n4. Click the down arrow — verify the next match is highlighted as current and scrolled into view\n5. Navigate past the last match — verify it wraps to the first\n6. Toggle case sensitivity — verify match results change appropriately\n7. Open replace mode, type replacement text, click Replace — verify the current match is replaced\n8. Click Replace All — verify all remaining matches are replaced and count is shown\n9. Press Escape — verify panel closes and highlights are cleared\n10. Search for a term that doesn't exist — verify '0 matches' is shown\n11. Unit test: search logic returns correct match positions for sample text\n12. E2E test: open search, find text, replace, verify document content changes"
+  },
+  {
+    "title": "T-ED-9: Code Block Syntax Highlighting",
+    "status": "Backlog",
+    "priority": 4,
+    "repo": "web-text-editor",
+    "labels": ["editor", "syntax-highlighting", "code"],
+    "description": "Add syntax highlighting for code blocks in the editor. Users should be able to insert code blocks, select a language, and see syntax-highlighted code with a monospace font and language label.\n\n## Technical Details\n\n- Install: `@tiptap/extension-code-block-lowlight`, `lowlight`, plus language grammars\n- Replace the StarterKit `codeBlock` with `CodeBlockLowlight`:\n  - Configure lowlight with common languages: javascript, typescript, python, json, html, css, bash, sql, markdown, go, rust, java, c, cpp, yaml, xml\n  - Use `lowlight.createLowlight(common)` for a reasonable bundle size\n- Create `CodeBlock.tsx` custom node view (optional, for enhanced UX):\n  - Language selector dropdown in the top-right corner of the code block\n  - Copy button to copy code block content to clipboard\n  - Code block has a distinct background (light gray or dark theme)\n  - Monospace font (JetBrains Mono, Fira Code, or system monospace)\n  - Line numbers (optional stretch goal)\n- Syntax highlighting theme:\n  - Choose or create a highlight.js CSS theme that works with the editor's overall design\n  - Support both the editor's light theme and a dark code block variant\n- Markdown integration:\n  - Code blocks with language hints (```python) should preserve the language through Markdown round-trips\n  - Language is stored in the `language` attribute of the code block node\n- Tab key behavior inside code blocks:\n  - Tab inserts 2 spaces (not a tab character, configurable)\n  - Shift+Tab dedents the current line",
+    "acceptance_criteria": [
+      "Code blocks render with syntax highlighting for at least 10 languages",
+      "The language selector dropdown appears on hover or focus of a code block",
+      "Changing the language re-highlights the code block immediately",
+      "Code blocks have a visually distinct background and monospace font",
+      "The copy button copies code block content to the clipboard",
+      "Tab key inserts spaces inside code blocks instead of moving focus",
+      "Shift+Tab dedents the current line in a code block",
+      "Code blocks with language hints round-trip correctly through Markdown (```python ... ```)",
+      "The syntax highlighting theme is visually consistent with the editor design",
+      "Creating a code block via toolbar or Markdown (```) works correctly"
+    ],
+    "test_plan": "1. Insert a code block via the toolbar — verify it renders with a distinct background\n2. Type JavaScript code — verify syntax highlighting applies (keywords, strings, etc.)\n3. Change the language selector to Python — verify highlighting updates\n4. Copy a code block — verify clipboard contains the plain code text\n5. Press Tab inside a code block — verify spaces are inserted, not a tab character\n6. Press Shift+Tab — verify the line is dedented\n7. Write a Markdown code block with language hint (```typescript), save as Markdown, reload — verify language is preserved\n8. Test highlighting for 5+ different languages\n9. Unit test: CodeBlockLowlight extension is registered and configured with expected languages\n10. E2E test: create code block, type code, verify syntax highlight classes are present in DOM"
+  },
+  {
+    "title": "T-ED-10: Auto-Save & IndexedDB Persistence",
+    "status": "Backlog",
+    "priority": 5,
+    "repo": "web-text-editor",
+    "labels": ["editor", "persistence", "auto-save"],
+    "description": "Implement automatic document persistence using IndexedDB so that documents survive page reloads, browser crashes, and accidental tab closures. All open documents and their state are automatically saved and restored.\n\n## Technical Details\n\n- Install `idb` (lightweight IndexedDB wrapper with Promise API)\n- Create `src/lib/storage.ts`:\n  - Database: `text-editor-db`, version 1\n  - Object store: `documents` with keyPath `id`\n  - Indexes: `updatedAt` (for sorting), `title` (for searching)\n  - CRUD operations:\n    - `saveDocument(doc: EditorDocument): Promise<void>`\n    - `loadAllDocuments(): Promise<EditorDocument[]>`\n    - `deleteDocument(id: string): Promise<void>`\n    - `saveAppState(state: { openDocIds: string[], activeDocId: string }): Promise<void>`\n    - `loadAppState(): Promise<{ openDocIds: string[], activeDocId: string } | null>`\n- Auto-save behavior:\n  - On every editor content change, debounce 1500ms, then save to IndexedDB\n  - Update `updatedAt` timestamp on each save\n  - Visual feedback in status bar: 'Saving...' during write, 'Saved ✓' on completion\n  - Save app state (open tab order, active tab) on every tab change\n- Startup restore:\n  - On app load, read all documents and app state from IndexedDB\n  - Reopen tabs in the saved order, activate the last active tab\n  - Restore each document's content into the editor\n  - If IndexedDB is empty (first launch), create a default untitled document\n- `beforeunload` handler:\n  - If any document is dirty (changed since last auto-save), show the browser's native 'unsaved changes' warning\n  - Trigger an immediate save attempt for all dirty documents\n- Storage management:\n  - Display storage usage in a settings/about panel (optional stretch)\n  - Handle IndexedDB quota errors gracefully with a user-visible warning",
+    "acceptance_criteria": [
+      "Typing in the editor triggers an auto-save to IndexedDB after 1.5 seconds of inactivity",
+      "Status bar shows 'Saving...' during auto-save and 'Saved ✓' on completion",
+      "Refreshing the page restores all previously open documents with their content",
+      "Tab order and active tab are preserved across page reloads",
+      "Closing a tab removes the document from the open set but keeps it in IndexedDB",
+      "The beforeunload warning appears when dirty documents exist and the user tries to close the browser tab",
+      "First launch (empty IndexedDB) creates a default untitled document",
+      "Documents saved to IndexedDB include correct updatedAt timestamps",
+      "IndexedDB quota errors are caught and displayed as a user warning",
+      "Auto-save does not cause editor lag or cursor jumps"
+    ],
+    "test_plan": "1. Type text in the editor, wait 2 seconds — verify 'Saved ✓' appears in status bar\n2. Refresh the page — verify the document content is restored exactly\n3. Open 3 tabs with different content, refresh — verify all 3 tabs reopen with correct content and order\n4. Close a tab, refresh — verify the closed tab is not reopened but its content remains in IndexedDB\n5. Open browser DevTools > Application > IndexedDB — verify documents are stored with correct schema\n6. Type text and immediately close the browser tab — verify the beforeunload warning appears\n7. Clear IndexedDB, refresh — verify a new untitled document is created\n8. Rapidly type many characters — verify no lag or cursor position jumps from auto-save\n9. Unit test: saveDocument stores correct data in IndexedDB (using fake-indexeddb)\n10. Unit test: loadAllDocuments returns all saved documents\n11. Unit test: debounced auto-save fires after 1500ms of no changes\n12. E2E test: type content, reload page, verify content persists"
+  }
+]
