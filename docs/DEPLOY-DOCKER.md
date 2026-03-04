@@ -75,7 +75,7 @@ curl http://localhost:5173/healthz
 
 Open **http://&lt;host&gt;:5173** in a browser. Use token **`dev-token`** (or whatever you set).
 
-## 5. Update (redeploy)
+## 5. Update (redeploy) — database preserved
 
 On your machine: rebuild, save, and send the new image (same as steps 1–2). On the server:
 
@@ -91,7 +91,7 @@ docker run -d --name taskboard -p 5173:5173 \
   taskboard:latest
 ```
 
-The same volume `taskboard-data` keeps your DB across updates.
+The **same volume** `taskboard-data` keeps your SQLite DB across updates. Only remove the *container* (`docker rm taskboard`); **do not** run `docker volume rm taskboard-data` or you will lose the database.
 
 ## Server requirements
 
