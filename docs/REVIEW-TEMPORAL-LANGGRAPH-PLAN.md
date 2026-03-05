@@ -2,6 +2,8 @@
 
 This document reviews the **Temporal + LangGraph Orchestration** plan against the existing dark-factory-board codebase (TaskBoard API + UI) and provides concrete gaps, alignment notes, and implementation recommendations.
 
+**For implementation:** Use **[DARK-FACTORY-EXECUTION-PLAN.md](./DARK-FACTORY-EXECUTION-PLAN.md)** as the single one-shot spec for an LLM programming agent: linear phases, pinned tech stack, exact API contracts, activity I/O, and validation checkpoints.
+
 ---
 
 ## What exists today vs what’s left
@@ -19,10 +21,10 @@ Everything below is still to implement. The checklist and order in this doc are 
 | 1 | **Temporal Server + DB** | Self-hosted Temporal + persistence (e.g. Postgres). |
 | 2 | **Worker service** | Process that runs the workflow + activities; hosts TaskBoard client, Git, and LangGraph. |
 | 3 | **Task board client** | Thin client over TaskBoard API (list, acquire, heartbeat, transition, patch run, updates, events). |
-| 4 | **ProgramRun workflow** | Temporal workflow: loop PickNextTask → … → CloseTask; when no eligible task, sleep (e.g. 5 min) and retry until task found or max idle reached, then exit. |
+| 4 | **DarkFactoryRun workflow** | Temporal workflow: loop PickNextTask → … → CloseTask; when no eligible task, sleep (e.g. 5 min) and retry until task found or max idle reached, then exit. |
 | 5 | **Activities (in order)** | PickNextTask, ClaimTask, PrepareWorkspace, ExecuteTaskWithLangGraph, RunTaskTests, OpenOrUpdatePR, WaitForReviewAndCI, CloseTask. |
 | 6 | **Task spec format** | Build task spec as Markdown from ticket fields only (title, description, acceptance_criteria, test_plan, repo, labels); no spec_ref. |
-| 7 | **LangGraph graph** | Planner → Implementer → Reviewer (optional interrupt); runs inside ExecuteTaskWithLangGraph. |
+| 7 | **LangGraph graph** | Planner → Implementer → Reviewer, with human-approval interrupt; runs inside ExecuteTaskWithLangGraph. |
 | 8 | **Git + CI integration** | Clone, branch, push, create/update PR; **worker polls** Git/CI API for status; update run via PATCH; no TaskBoard callback. |
 | 9 | **Artifact storage** | Store artifact files in TaskBoard store; attach to ticket via ticket-attachments API (e.g. POST/GET /tickets/{id}/attachments). |
 | 10 | **Human approval** | In scope: interrupt, Blocked + phase `awaiting_approval`; run field `pending_approval_decision_id`; API `POST /runs/{ticketId}/approve` and `/reject` (signal workflow). |
@@ -117,7 +119,7 @@ Add **`POST /runs/release`** (or **`POST /runs/{ticketId}/release`**) with body 
 
 Using your plan’s checklist, with notes from this review:
 
-- [ ] **Temporal workflow:** `ProgramRun` (or `DarkFactoryRun`)  
+- [ ] **Temporal workflow:** `DarkFactoryRun`  
   - Loop: PickNextTask → ClaimTask → … → CloseTask. When PickNextTask returns no eligible task: **sleep** for a configured duration (e.g. 5 min), then call PickNextTask again; repeat until a task is found or a max idle/time limit is reached, then exit.
 - [ ] **Activities:**
   - [ ] **PickNextTask** — `GET /pick-next?repo=...`; return `(ticket_id, task_spec)` where task_spec is the Markdown string built from ticket fields (title, description, acceptance_criteria, test_plan, repo, labels).
@@ -126,10 +128,10 @@ Using your plan’s checklist, with notes from this review:
   - [ ] **ExecuteTaskWithLangGraph** — run LangGraph (planner → implementer → reviewer, with human-approval interrupt); post checklist/updates; on interrupt, transition to Blocked and return “needs_approval” so workflow waits for signal, then resumes.
   - [ ] **RunTaskTests** — run task-level tests; capture logs; post results; on failure, return failure so workflow can re-invoke LangGraph or retry.
   - [ ] **OpenOrUpdatePR** — push, create/update PR; `PATCH /runs/{ticketId}` (pr_number, etc.); upload artifacts to ticket via TaskBoard attachments API; transition to `Review`.
-  - [ ] **WaitForReviewAndCI** — **worker polls** Git host/CI API (e.g. GitHub PR + checks) for PR and CI status; update run via `PATCH /runs/{ticketId}` (`last_ci_state`, etc.); on merged → CloseTask; on “changes requested” → transition back to InProgress and re-run from ExecuteTaskWithLangGraph (or fix-up activity); on rejected → Blocked. No TaskBoard CI callback endpoint; worker needs Git/CI credentials.
+  - [ ] **WaitForReviewAndCI** — **worker polls** Git host/CI API (e.g. GitHub PR + checks) for PR and CI status; update run via `PATCH /runs/{ticketId}` (`last_ci_state`, etc.); on merged → CloseTask; on “changes requested” → transition back to InProgress and re-run ExecuteTaskWithLangGraph (pass reviewer feedback); on rejected → Blocked. No TaskBoard CI callback endpoint; worker needs Git/CI credentials.
   - [ ] **CloseTask** — call **`POST /runs/release`** (or `/runs/{ticketId}/release`) to release the lock, transition to `Done`, post final comment; stop heartbeating.
 - [ ] **Task board client** — thin client over existing API: list, acquire, heartbeat, transition, patch run, updates, events. Already specified in API.md and orchestrator skill.
-- [ ] **Git + CI integration** — PR creation and status (**worker polls** Git/CI API; no callback). Decide how CI status is pushed to the board (worker polls vs CI calls a small “callback” endpoint that patches run and/or triggers a Temporal signal).
+- [ ] **Git + CI integration** — PR creation and status: worker polls Git/CI API; update run via PATCH; no TaskBoard callback.
 - [ ] **Artifact storage** — TaskBoard store: add ticket-attachments API (e.g. `POST /tickets/{id}/attachments`, `GET /tickets/{id}/attachments`); worker uploads logs and `task_result.json` as ticket attachments.
 - [ ] **Approval mechanism** — Run field `pending_approval_decision_id`; API `POST /runs/{ticketId}/approve` and `POST /runs/{ticketId}/reject` with `{ "decision_id", "note" }`; API signals Temporal workflow.
 
@@ -150,7 +152,7 @@ Using your plan’s checklist, with notes from this review:
    Run tests from workspace; push branch and open PR; patch run with PR/CI links.
 
 5. **WaitForReviewAndCI**  
-   Worker polls Git/CI API and implement “merged / changes requested / rejected” branching; optionally re-enter ExecuteTaskWithLangGraph on “changes requested.”
+   Worker polls Git/CI API and implement “merged / changes requested / rejected” branching; on "changes requested" re-enter ExecuteTaskWithLangGraph (pass reviewer feedback); no separate fix-up activity.
 
 6. **Human approval**  
    Add interrupt in LangGraph, Blocked + phase `awaiting_approval`, run field `pending_approval_decision_id`; implement `POST /runs/{ticketId}/approve` and `/reject` that signal the workflow; UI can show “Waiting for approval” and call the API.
@@ -190,7 +192,7 @@ Overall, the plan is **ready to implement** with the above refinements. CI: work
 
 - **You have:** TaskBoard (API + UI) as the source of truth for tasks and run state.
 - **You still need:**
-  1. **Temporal** (server + DB) and a **Worker** that runs the `ProgramRun` workflow and all activities.
+  1. **Temporal** (server + DB) and a **Worker** that runs the `DarkFactoryRun` workflow and all activities.
   2. A **TaskBoard client** used by the worker (can be a small library or inline HTTP calls).
   3. **All 8 activities** implemented and wired (PickNextTask → ClaimTask → PrepareWorkspace → ExecuteTaskWithLangGraph → RunTaskTests → OpenOrUpdatePR → WaitForReviewAndCI → CloseTask).
   4. **LangGraph** inside `ExecuteTaskWithLangGraph`: planner → implementer → reviewer, with task spec built from ticket fields (and optional interrupt for approval).
