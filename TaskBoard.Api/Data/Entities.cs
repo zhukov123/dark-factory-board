@@ -19,6 +19,7 @@ public sealed class TicketEntity
     public DateTime? DeletedAt { get; set; }
 
     public RunEntity? Run { get; set; }
+    public List<AttachmentEntity> Attachments { get; set; } = [];
     public List<DependencyEntity> BlockedBy { get; set; } = [];
     public List<DependencyEntity> Blocks { get; set; } = [];
     public List<EventEntity> Events { get; set; } = [];
@@ -45,7 +46,22 @@ public sealed class RunEntity
     public CiState LastCiState { get; set; } = CiState.Unknown;
     public string? LastSummary { get; set; }
     public string? LastError { get; set; }
+    public string? PendingApprovalDecisionId { get; set; }
+    public string? WorkflowId { get; set; }
     public DateTime UpdatedAt { get; set; }
+
+    public TicketEntity Ticket { get; set; } = default!;
+}
+
+public sealed class AttachmentEntity
+{
+    public long Id { get; set; }
+    public string TicketId { get; set; } = default!;
+    public string Name { get; set; } = default!;
+    public string? ContentType { get; set; }
+    public long Size { get; set; }
+    public string StoragePath { get; set; } = default!;
+    public DateTime CreatedAt { get; set; }
 
     public TicketEntity Ticket { get; set; } = default!;
 }

@@ -28,6 +28,10 @@ public sealed record TransitionTicketRequest(string To, string? Note, string By,
 
 public sealed record AcquireRunRequest(string TicketId, string Owner, int TtlSeconds);
 
+public sealed record ClaimRunRequest(string TicketId, string Owner, int TtlSeconds);
+
+public sealed record ReleaseRunRequest(string TicketId, string Owner);
+
 public sealed record HeartbeatRunRequest(string TicketId, string Owner, int TtlSeconds);
 
 public sealed record PatchRunRequest(
@@ -37,7 +41,11 @@ public sealed record PatchRunRequest(
     int? PrNumber,
     string? LastCiState,
     string? LastSummary,
-    string? LastError);
+    string? LastError,
+    string? WorkflowId,
+    string? PendingApprovalDecisionId);
+
+public sealed record ApprovalDecisionRequest(string DecisionId, string? Note);
 
 public sealed record CreateEventRequest(string? TicketId, string Type, object? Payload);
 
@@ -68,7 +76,20 @@ public sealed record RunDto(
     string LastCiState,
     string? LastSummary,
     string? LastError,
+    string? PendingApprovalDecisionId,
+    string? WorkflowId,
     DateTime UpdatedAt);
+
+public sealed record AttachmentDto(
+    long Id,
+    string TicketId,
+    string Name,
+    long Size,
+    DateTime CreatedAt);
+
+public sealed record AttachmentListResponse(IReadOnlyList<AttachmentDto> Items);
+
+public sealed record UploadAttachmentJsonRequest(string Name, string? ContentType, string? Content);
 
 public sealed record EventDto(long Id, string? TicketId, string Type, object Payload, DateTime CreatedAt);
 

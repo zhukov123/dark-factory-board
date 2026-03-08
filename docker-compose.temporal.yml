@@ -1,0 +1,37 @@
+# Temporal server + Web UI for local development (optional).
+# Usage: docker compose -f docker-compose.temporal.yml up -d
+# Worker and API use TEMPORAL_HOST=localhost:7233
+# Web UI: http://localhost:8080 (namespace: default)
+services:
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_DEFAULT_NAMESPACE=default
+    depends_on:
+      - temporal
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+    ports:
+      - "5432:5432"
+    volumes:
+      - temporal_pgdata:/var/lib/postgresql/data
+volumes:
+  temporal_pgdata:

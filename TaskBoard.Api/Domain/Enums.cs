@@ -16,7 +16,8 @@ public enum RunPhase
     Implement,
     Test,
     Review,
-    Integrate
+    Integrate,
+    AwaitingApproval
 }
 
 public enum CiState

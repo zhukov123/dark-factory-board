@@ -95,6 +95,16 @@ export function TicketModal({
     onError: (error) => onError(formatError(error)),
   })
 
+  const releaseRunMutation = useMutation({
+    mutationFn: (owner: string) => client.releaseRun(ticket.id, owner),
+    onSuccess: () => {
+      onError('')
+      void invalidateBoard(queryClient)
+      void queryClient.invalidateQueries({ queryKey: ['events', ticket.id] })
+    },
+    onError: (error) => onError(formatError(error)),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: () => client.deleteTicket(ticket.id),
     onSuccess: onDeleted,
@@ -378,6 +388,23 @@ export function TicketModal({
                       </>
                     )}
                   </dl>
+                  {ticket.status === 'InProgress' && ticket.run != null && (
+                    <div className="run-actions">
+                      <button
+                        type="button"
+                        className="release-run-btn"
+                        disabled={releaseRunMutation.isPending}
+                        onClick={() =>
+                          releaseRunMutation.mutate(ticket.run!.lockOwner ?? 'worker-1')
+                        }
+                      >
+                        {releaseRunMutation.isPending ? 'Releasing…' : 'Release run'}
+                      </button>
+                      <span className="run-action-hint">
+                        Clears the lock so another run can claim this ticket. Use if the worker died or the run is stuck.
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -1,5 +1,6 @@
 **/bin/
 **/obj/
+worker/.env
 TaskBoard.Ui/node_modules/
 TaskBoard.Ui/dist/
 TaskBoard.Api/*.db
@@ -15,3 +16,6 @@ out-linux/
 # Vite build artifacts (hashed assets copied to API wwwroot)
 TaskBoard.Api/wwwroot/assets/index-*.js
 TaskBoard.Api/wwwroot/assets/index-*.css
+
+# LLM interaction logs (remove this line to track logs in git)
+logs/

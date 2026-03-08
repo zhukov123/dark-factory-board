@@ -30,6 +30,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 builder.Services.AddScoped<TicketIdService>();
 builder.Services.AddSingleton<DagService>();
+builder.Services.AddSingleton<TemporalSignalService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -582,6 +583,183 @@ app.MapPost("/runs/acquire", async (
     });
 });
 
+app.MapPost("/runs/claim", async (
+    ClaimRunRequest request,
+    TaskBoardDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var ticket = await db.Tickets
+        .Include(t => t.Run)
+        .FirstOrDefaultAsync(t => t.Id == request.TicketId && !t.IsDeleted, cancellationToken);
+    if (ticket is null)
+    {
+        return Results.NotFound(new { error = "ticket not found" });
+    }
+
+    if (ticket.Status != TicketStatus.Ready)
+    {
+        return Results.Conflict(new { claimed = false, error = "ticket is not Ready" });
+    }
+
+    if (request.TtlSeconds <= 0)
+    {
+        return Results.BadRequest(new { error = "ttl_seconds must be greater than 0" });
+    }
+
+    var now = DateTime.UtcNow;
+    var run = ticket.Run;
+    if (run is null)
+    {
+        run = new RunEntity
+        {
+            TicketId = request.TicketId,
+            Phase = RunPhase.Plan,
+            Attempt = 0,
+            LastCiState = CiState.Unknown,
+            UpdatedAt = now
+        };
+        db.Runs.Add(run);
+    }
+    else
+    {
+        var isLockedByAnother =
+            run.LockOwner is not null
+            && !run.LockOwner.Equals(request.Owner, StringComparison.Ordinal)
+            && run.LockExpiresAt.HasValue
+            && run.LockExpiresAt.Value > now;
+        if (isLockedByAnother)
+        {
+            return Results.Conflict(new { claimed = false, error = "lock held by another owner or not expired" });
+        }
+    }
+
+    run.LockOwner = request.Owner;
+    run.LockExpiresAt = now.AddSeconds(request.TtlSeconds);
+    run.Phase = RunPhase.Plan;
+    run.UpdatedAt = now;
+    ticket.Status = TicketStatus.InProgress;
+    ticket.UpdatedAt = now;
+
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(new { claimed = true, run = DtoMapping.ToRunDto(run) });
+});
+
+app.MapPost("/runs/release", async (
+    ReleaseRunRequest request,
+    TaskBoardDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var run = await db.Runs.SingleOrDefaultAsync(r => r.TicketId == request.TicketId, cancellationToken);
+    if (run is null)
+    {
+        return Results.NotFound(new { error = "run not found" });
+    }
+
+    var now = DateTime.UtcNow;
+    var isExpired = run.LockExpiresAt.HasValue && run.LockExpiresAt.Value <= now;
+    if (!isExpired)
+    {
+        if (run.LockOwner is null || !run.LockOwner.Equals(request.Owner, StringComparison.Ordinal))
+        {
+            return Results.Conflict(new { released = false, error = "lock not held by this owner" });
+        }
+    }
+    // When lock is expired, allow release by anyone (e.g. from UI to unstick).
+
+    run.LockOwner = null;
+    run.LockExpiresAt = null;
+    run.UpdatedAt = now;
+
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(new { released = true });
+});
+
+app.MapPost("/runs/{ticketId}/approve", async (
+    string ticketId,
+    ApprovalDecisionRequest request,
+    TaskBoardDbContext db,
+    TemporalSignalService temporalSignal,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.DecisionId))
+    {
+        return Results.BadRequest(new { error = "decision_id is required" });
+    }
+
+    var run = await db.Runs.SingleOrDefaultAsync(r => r.TicketId == ticketId, cancellationToken);
+    if (run is null)
+    {
+        return Results.NotFound(new { error = "run not found" });
+    }
+
+    if (run.Phase != RunPhase.AwaitingApproval)
+    {
+        return Results.BadRequest(new { error = "run is not AwaitingApproval" });
+    }
+
+    if (run.PendingApprovalDecisionId != request.DecisionId)
+    {
+        return Results.BadRequest(new { error = "decision_id does not match" });
+    }
+
+    if (string.IsNullOrWhiteSpace(run.WorkflowId))
+    {
+        return Results.Conflict(new { error = "workflow_id not set on run; cannot signal" });
+    }
+
+    var signaled = await temporalSignal.SignalApprovalAsync(run.WorkflowId, request.DecisionId, request.Note, approve: true, cancellationToken);
+    if (!signaled && temporalSignal.IsConfigured)
+    {
+        return Results.StatusCode(503);
+    }
+
+    return Results.Ok(new { ok = true });
+});
+
+app.MapPost("/runs/{ticketId}/reject", async (
+    string ticketId,
+    ApprovalDecisionRequest request,
+    TaskBoardDbContext db,
+    TemporalSignalService temporalSignal,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.DecisionId))
+    {
+        return Results.BadRequest(new { error = "decision_id is required" });
+    }
+
+    var run = await db.Runs.SingleOrDefaultAsync(r => r.TicketId == ticketId, cancellationToken);
+    if (run is null)
+    {
+        return Results.NotFound(new { error = "run not found" });
+    }
+
+    if (run.Phase != RunPhase.AwaitingApproval)
+    {
+        return Results.BadRequest(new { error = "run is not AwaitingApproval" });
+    }
+
+    if (run.PendingApprovalDecisionId != request.DecisionId)
+    {
+        return Results.BadRequest(new { error = "decision_id does not match" });
+    }
+
+    if (string.IsNullOrWhiteSpace(run.WorkflowId))
+    {
+        return Results.Conflict(new { error = "workflow_id not set on run; cannot signal" });
+    }
+
+    var signaled = await temporalSignal.SignalApprovalAsync(run.WorkflowId, request.DecisionId, request.Note, approve: false, cancellationToken);
+    if (!signaled && temporalSignal.IsConfigured)
+    {
+        return Results.StatusCode(503);
+    }
+
+    return Results.Ok(new { ok = true });
+});
+
 app.MapPost("/runs/heartbeat", async (
     HeartbeatRunRequest request,
     TaskBoardDbContext db,
@@ -680,6 +858,16 @@ app.MapPatch("/runs/{ticketId}", async (
     if (request.LastError is not null)
     {
         run.LastError = request.LastError;
+    }
+
+    if (request.WorkflowId is not null)
+    {
+        run.WorkflowId = request.WorkflowId;
+    }
+
+    if (request.PendingApprovalDecisionId is not null)
+    {
+        run.PendingApprovalDecisionId = request.PendingApprovalDecisionId;
     }
 
     run.UpdatedAt = DateTime.UtcNow;
@@ -925,6 +1113,145 @@ app.MapGet("/events", async (
         .ToListAsync(cancellationToken);
 
     return Results.Ok(events.Select(DtoMapping.ToEventDto).ToList());
+});
+
+var attachmentBasePath = builder.Configuration["Attachments:BasePath"]
+    ?? Path.Combine(Path.GetTempPath(), "taskboard-attachments");
+Directory.CreateDirectory(attachmentBasePath);
+
+string SanitizeAttachmentFileName(string name)
+{
+    var invalid = Path.GetInvalidFileNameChars();
+    var sanitized = string.Join("_", (name ?? "attachment").Split(invalid, StringSplitOptions.RemoveEmptyEntries));
+    return string.IsNullOrWhiteSpace(sanitized) ? "attachment" : sanitized.Trim();
+}
+
+app.MapPost("/tickets/{id}/attachments", async (
+    string id,
+    HttpRequest request,
+    TaskBoardDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var ticket = await db.Tickets.SingleOrDefaultAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
+    if (ticket is null)
+    {
+        return Results.NotFound(new { error = "ticket not found" });
+    }
+
+    string name;
+    string? contentType = null;
+    byte[] content;
+
+    if (request.ContentType?.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase) == true)
+    {
+        var form = await request.ReadFormAsync(cancellationToken);
+        var file = form.Files.GetFile("file") ?? form.Files.GetFile("content");
+        if (file is null)
+        {
+            return Results.BadRequest(new { error = "file or content form field required" });
+        }
+        name = form["name"].FirstOrDefault() ?? file.FileName ?? "attachment";
+        contentType = file.ContentType;
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms, cancellationToken);
+        content = ms.ToArray();
+    }
+    else
+    {
+        var body = await request.ReadFromJsonAsync<UploadAttachmentJsonRequest>(cancellationToken);
+        if (body is null || string.IsNullOrWhiteSpace(body.Name))
+        {
+            return Results.BadRequest(new { error = "name is required" });
+        }
+        name = body.Name.Trim();
+        contentType = body.ContentType;
+        if (string.IsNullOrWhiteSpace(body.Content))
+        {
+            return Results.BadRequest(new { error = "content (base64) is required" });
+        }
+        try
+        {
+            content = Convert.FromBase64String(body.Content);
+        }
+        catch
+        {
+            return Results.BadRequest(new { error = "content must be valid base64" });
+        }
+    }
+
+    var now = DateTime.UtcNow;
+    var entity = new AttachmentEntity
+    {
+        TicketId = id,
+        Name = name,
+        ContentType = contentType,
+        Size = 0,
+        StoragePath = "",
+        CreatedAt = now
+    };
+    db.Attachments.Add(entity);
+    await db.SaveChangesAsync(cancellationToken);
+
+    var fileName = $"{id}_{entity.Id}_{SanitizeAttachmentFileName(name)}";
+    var fullPath = Path.Combine(attachmentBasePath, fileName);
+    await File.WriteAllBytesAsync(fullPath, content, cancellationToken);
+
+    entity.Size = content.Length;
+    entity.StoragePath = fileName;
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Created($"/tickets/{id}/attachments/{entity.Id}", new
+    {
+        id = entity.Id,
+        ticket_id = entity.TicketId,
+        name = entity.Name,
+        size = entity.Size,
+        created_at = entity.CreatedAt
+    });
+});
+
+app.MapGet("/tickets/{id}/attachments", async (
+    string id,
+    TaskBoardDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var ticketExists = await db.Tickets.AnyAsync(t => t.Id == id && !t.IsDeleted, cancellationToken);
+    if (!ticketExists)
+    {
+        return Results.NotFound(new { error = "ticket not found" });
+    }
+
+    var items = await db.Attachments
+        .Where(a => a.TicketId == id)
+        .OrderByDescending(a => a.CreatedAt)
+        .Select(a => new { id = a.Id, name = a.Name, size = a.Size, created_at = a.CreatedAt })
+        .ToListAsync(cancellationToken);
+
+    return Results.Ok(new { items });
+});
+
+app.MapGet("/tickets/{id}/attachments/{attachmentId:long}", async (
+    string id,
+    long attachmentId,
+    TaskBoardDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var attachment = await db.Attachments
+        .FirstOrDefaultAsync(a => a.TicketId == id && a.Id == attachmentId, cancellationToken);
+    if (attachment is null)
+    {
+        return Results.NotFound();
+    }
+
+    var fullPath = Path.Combine(attachmentBasePath, attachment.StoragePath);
+    if (!File.Exists(fullPath))
+    {
+        return Results.NotFound();
+    }
+
+    var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
+    var contentType = attachment.ContentType ?? "application/octet-stream";
+    return Results.File(bytes, contentType, attachment.Name);
 });
 
 app.MapFallbackToFile("index.html");

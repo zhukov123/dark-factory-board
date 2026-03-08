@@ -249,6 +249,14 @@ export class TaskBoardApiClient {
     return mapEvent(data)
   }
 
+  /** Release the run lock for a ticket (owner must match, or lock may be expired). */
+  async releaseRun(ticketId: string, owner: string): Promise<{ released: boolean }> {
+    return this.request<{ released: boolean }>('/runs/release', {
+      method: 'POST',
+      body: JSON.stringify({ ticket_id: ticketId, owner }),
+    })
+  }
+
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,

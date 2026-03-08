@@ -155,13 +155,27 @@ A ticket’s **blocked_by** list is the set of ticket IDs that must be done befo
 
 ## Runs and locking (for orchestrator)
 
-The orchestrator should **acquire** a lock before working on a ticket, **heartbeat** to extend it, and **patch** the run for phase/CI state.
+The orchestrator should **claim** a ticket (Ready only), then **release** when done. Optional **acquire**/ **heartbeat** for backward compatibility.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/runs/acquire` | Acquire or extend lock for a ticket. |
+| POST | `/runs/claim` | Claim a Ready ticket (sets InProgress, lock, phase=Plan). |
+| POST | `/runs/release` | Release lock for a ticket (owner must match). |
+| POST | `/runs/acquire` | Acquire or extend lock (legacy). |
 | POST | `/runs/heartbeat` | Extend lock (same owner, lock not expired). |
-| PATCH | `/runs/{ticketId}` | Update run state (phase, attempt, branch, PR, CI, etc.). **Does not** change lock owner/expiry. |
+| PATCH | `/runs/{ticketId}` | Update run state (phase, branch, pr_number, workflow_id, pending_approval_decision_id, etc.). |
+| POST | `/runs/{ticketId}/approve` | Signal Temporal workflow (run must be AwaitingApproval, decision_id match). Body: `{ "decision_id", "note" }`. |
+| POST | `/runs/{ticketId}/reject` | Signal Temporal workflow to reject. Body: `{ "decision_id", "note" }`. |
+
+**Run phases:** `plan`, `implement`, `test`, `review`, `integrate`, `awaiting_approval`.
+
+### POST /runs/claim
+
+**Body:** `{ "ticket_id", "owner", "ttl_seconds" }`. Ticket must be **Ready**. On success: **200** `{ "claimed": true, "run": { ... } }`. **409** if ticket not Ready or lock held by another. **404** if ticket not found.
+
+### POST /runs/release
+
+**Body:** `{ "ticket_id", "owner" }`. **200** `{ "released": true }`. **409** if lock not held by this owner or expired. **404** if run not found.
 
 ### POST /runs/acquire
 
@@ -222,10 +236,21 @@ The orchestrator should **acquire** a lock before working on a ticket, **heartbe
 }
 ```
 
-**Phase values:** `plan`, `implement`, `test`, `review`, `integrate`.  
-**CI state values:** `unknown`, `pending`, `success`, `failure`.
+**Phase values:** `plan`, `implement`, `test`, `review`, `integrate`, `awaiting_approval`.  
+**CI state values:** `unknown`, `pending`, `success`, `failure`.  
+PATCH may also set `workflow_id`, `pending_approval_decision_id` (for human approval flow).
 
-Lock owner and expiry **cannot** be changed via PATCH (only via acquire/heartbeat).
+Lock owner and expiry **cannot** be changed via PATCH (only via claim/release or acquire/heartbeat).
+
+---
+
+## Ticket attachments
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/tickets/{id}/attachments` | Upload file (multipart: name, file; or JSON: name, content_type, content base64). **201** returns `{ "id", "ticket_id", "name", "size", "created_at" }`. |
+| GET | `/tickets/{id}/attachments` | List attachments. **200** `{ "items": [ { "id", "name", "size", "created_at" } ] }`. |
+| GET | `/tickets/{id}/attachments/{attachmentId}` | Download file. **404** if not found. |
 
 ---
 

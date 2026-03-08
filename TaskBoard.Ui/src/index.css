@@ -1000,6 +1000,39 @@ button.secondary:hover:not(:disabled) {
   font-weight: 500;
 }
 
+.run-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.release-run-btn {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.85rem;
+  background: #c97d10;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.release-run-btn:hover:not(:disabled) {
+  background: #a8680c;
+}
+
+.release-run-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.run-action-hint {
+  font-size: 0.78rem;
+  color: #5a6c7d;
+  max-width: 20rem;
+}
+
 /* ─── Events ──────────────────────────────────────────────── */
 
 .event-list {

@@ -8,6 +8,7 @@ public sealed class TaskBoardDbContext(DbContextOptions<TaskBoardDbContext> opti
     public DbSet<TicketEntity> Tickets => Set<TicketEntity>();
     public DbSet<DependencyEntity> Dependencies => Set<DependencyEntity>();
     public DbSet<RunEntity> Runs => Set<RunEntity>();
+    public DbSet<AttachmentEntity> Attachments => Set<AttachmentEntity>();
     public DbSet<EventEntity> Events => Set<EventEntity>();
     public DbSet<CounterEntity> Counters => Set<CounterEntity>();
 
@@ -65,12 +66,32 @@ public sealed class TaskBoardDbContext(DbContextOptions<TaskBoardDbContext> opti
             entity.Property(r => r.LastCiState).HasColumnName("last_ci_state").HasConversion<string>();
             entity.Property(r => r.LastSummary).HasColumnName("last_summary");
             entity.Property(r => r.LastError).HasColumnName("last_error");
+            entity.Property(r => r.PendingApprovalDecisionId).HasColumnName("pending_approval_decision_id");
+            entity.Property(r => r.WorkflowId).HasColumnName("workflow_id");
             entity.Property(r => r.UpdatedAt).HasColumnName("updated_at");
             entity.HasOne(r => r.Ticket)
                 .WithOne(t => t.Run)
                 .HasForeignKey<RunEntity>(r => r.TicketId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(r => r.LockExpiresAt);
+        });
+
+        modelBuilder.Entity<AttachmentEntity>(entity =>
+        {
+            entity.ToTable("attachments");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).HasColumnName("id");
+            entity.Property(a => a.TicketId).HasColumnName("ticket_id");
+            entity.Property(a => a.Name).HasColumnName("name");
+            entity.Property(a => a.ContentType).HasColumnName("content_type");
+            entity.Property(a => a.Size).HasColumnName("size");
+            entity.Property(a => a.StoragePath).HasColumnName("storage_path");
+            entity.Property(a => a.CreatedAt).HasColumnName("created_at");
+            entity.HasOne(a => a.Ticket)
+                .WithMany(t => t.Attachments)
+                .HasForeignKey(a => a.TicketId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(a => a.TicketId);
         });
 
         modelBuilder.Entity<EventEntity>(entity =>

@@ -31,7 +31,16 @@ public static class DtoMapping
         run.LastCiState.ToString().ToLowerInvariant(),
         run.LastSummary,
         run.LastError,
+        run.PendingApprovalDecisionId,
+        run.WorkflowId,
         run.UpdatedAt);
+
+    public static AttachmentDto ToAttachmentDto(AttachmentEntity a) => new(
+        a.Id,
+        a.TicketId,
+        a.Name,
+        a.Size,
+        a.CreatedAt);
 
     public static EventDto ToEventDto(EventEntity entity)
     {

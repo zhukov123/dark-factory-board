@@ -56,6 +56,28 @@ Token source precedence:
 1. `TaskBoard:AuthToken` in config
 2. `TASKBOARD_TOKEN` environment variable
 
+## Dark Factory (worker + Temporal)
+
+Optional Python worker runs the DarkFactoryRun workflow (pick task → claim → prepare → LangGraph → tests → PR → close).
+
+1. **Start Temporal** (one of):
+   - `docker compose -f docker-compose.temporal.yml up -d`
+   - Or [Temporal CLI](https://docs.temporal.io/cli): `temporal server start-dev`
+2. **Start TaskBoard API** (see Development Run above). Set `TASKBOARD_URL` to the API URL (e.g. `http://localhost:5005`).
+3. **Run worker:**
+   ```bash
+   cd worker
+   pip install -r requirements.txt
+   export TASKBOARD_URL=http://localhost:5005 TASKBOARD_TOKEN=dev-token
+   python main.py
+   ```
+4. Start a workflow via Temporal UI (default `http://localhost:8233`) or CLI:  
+   `temporal workflow start --task-queue dark-factory --type DarkFactoryRun --input '{"owner":"worker-1","ttl_seconds":1800}'`
+
+See `worker/README.md` for env vars (GITHUB_TOKEN, REPO_CLONE_ROOT, etc.).  
+**E2E test:** [docs/E2E-TEST-DARK-FACTORY.md](docs/E2E-TEST-DARK-FACTORY.md) — start Temporal, API, seed tickets (`./scripts/seed-test-tickets.sh`), run worker, start workflow, verify tickets move Ready → Done.  
+**Autonomous run:** [docs/AUTONOMOUS-RUN.md](docs/AUTONOMOUS-RUN.md) — `./scripts/run-autonomous-cycle.sh` and `./scripts/poll-status.sh` to process all stories and produce code in your workspace (requires LM Studio or OpenRouter).
+
 ## Production Build / Serve
 
 1) Build UI:
