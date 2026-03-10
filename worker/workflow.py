@@ -54,6 +54,8 @@ class DarkFactoryRun:
             idle_start = None
             ticket_id = pick["ticket_id"]
             task_spec = pick.get("task_spec", "")
+            # When repo is None, pick-next returned any eligible ticket; use that ticket's repo for clone/PR
+            ticket_repo = pick.get("repo") or repo
 
             # 2. Claim
             claimed = await workflow.execute_activity(
@@ -65,15 +67,15 @@ class DarkFactoryRun:
                 workflow.logger.info("Claim failed, retrying pick", extra={"ticket_id": ticket_id})
                 continue
 
-            # 3. Prepare workspace (uses WORKSPACE_REPO if set, else workflow repo)
+            # 3. Prepare workspace (uses WORKSPACE_REPO if set, else ticket_repo)
             prep = await workflow.execute_activity(
                 "prepare_workspace",
-                args=[ticket_id, task_spec, repo],
+                args=[ticket_id, task_spec, ticket_repo],
                 start_to_close_timeout=timedelta(minutes=5),
             )
             workspace_path = prep.get("workspace_path", "")
             branch = prep.get("branch", "")
-            effective_repo = prep.get("repo") or repo
+            effective_repo = prep.get("repo") or ticket_repo
 
             # 4. Execute (LangGraph); handle approval interrupt (skip when skip_pr)
             exec_result = await workflow.execute_activity(

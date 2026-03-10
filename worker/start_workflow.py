@@ -9,11 +9,11 @@ from workflow import DarkFactoryRun
 
 async def main() -> None:
     client = await Client.connect(TEMPORAL_HOST)
-    # repo filters pick-next; sleep 60 when no task; exit after 1h idle; skip_pr from SKIP_PR env
+    # repo: None = pick any eligible ticket and use that ticket's repo for clone/PR; set to e.g. "task-manager-react" to filter
     handle = await client.start_workflow(
         DarkFactoryRun.run,
         args=[
-            "task-manager-react",  # repo
+            None,                  # repo (None = dynamic: any ticket, use ticket's repo)
             "worker-1",            # owner
             1800,                  # ttl_seconds
             60,                    # sleep_seconds_when_no_task

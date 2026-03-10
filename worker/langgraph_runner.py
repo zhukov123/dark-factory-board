@@ -91,6 +91,11 @@ class LLMLogHandler(BaseCallbackHandler):
         self._path.write_text(existing + "\n".join(parts), encoding="utf-8")
 
 
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks so downstream only sees the actual response."""
+    return re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL | re.IGNORECASE).strip()
+
+
 def _run_config_with_llm_log(config: dict | None, step: str) -> dict:
     """Add LLMLogHandler to config callbacks so every LLM call is logged to logs/llm/*.md."""
     # Always log: use repo log dir (config may not be passed to nodes by the graph runtime)
@@ -192,8 +197,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
         run_config = _run_config_with_llm_log(conf, "planner")
         out = llm.invoke(messages, config=run_config)
         content = out.content if hasattr(out, "content") else str(out)
-        # Strip <think>...</think> blocks so checklist is only the actual steps (some models emit thinking first)
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        content = _strip_thinking(content)
         lines = [x.strip() for x in content.splitlines() if x.strip()]
         return {**state, "checklist": lines}
 
@@ -217,7 +221,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
             if not has_tool_calls:
                 if turn == 0:
                     logger.warning("Implementer LLM returned no tool_calls (model may not support tool use). Response has content: %s", bool(getattr(out, "content", None)))
-                last_summary = (out.content or "").strip()
+                last_summary = _strip_thinking(out.content or "")
                 break
             logger.info("Implementer turn %d: %d tool_calls: %s", turn + 1, len(out.tool_calls), [tc.get("name") for tc in out.tool_calls])
             messages.append(AIMessage(content=out.content or "", tool_calls=out.tool_calls or []))
@@ -256,7 +260,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
         conf = config or {}
         run_config = _run_config_with_llm_log(conf, "reviewer")
         out = llm.invoke(messages, config=run_config)
-        content = (out.content if hasattr(out, "content") else str(out)).strip().lower()
+        content = _strip_thinking(out.content if hasattr(out, "content") else str(out)).lower()
         verdict = "pass"
         if "risky" in content:
             verdict = "risky"

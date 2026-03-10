@@ -48,7 +48,7 @@ Labels: {labels_str}
 
 @activity.defn
 async def pick_next_task(repo: str | None = None, owner: str | None = None) -> dict:
-    """GET pick-next, build task_spec from ticket. Returns { ticket_id, task_spec } or { ticket_id: None, reason }."""
+    """GET pick-next, build task_spec from ticket. When repo is None/empty, API returns any eligible ticket; repo in result is the chosen ticket's repo. Returns { ticket_id, task_spec, repo? } or { ticket_id: None, reason }."""
     result = await get_pick_next(repo=repo, owner=owner)
     ticket_id = result.get("ticket_id")
     if not ticket_id:
@@ -58,7 +58,8 @@ async def pick_next_task(repo: str | None = None, owner: str | None = None) -> d
     if not ticket:
         return {"ticket_id": None, "reason": "ticket not found"}
     task_spec = _build_task_spec(ticket)
-    return {"ticket_id": ticket_id, "task_spec": task_spec}
+    ticket_repo = ticket.get("repo") or None
+    return {"ticket_id": ticket_id, "task_spec": task_spec, "repo": ticket_repo}
 
 
 @activity.defn
