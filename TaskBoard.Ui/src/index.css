@@ -1807,6 +1807,15 @@ button.secondary:hover:not(:disabled) {
   flex: 1;
 }
 
+.waf-phase-waiting-llm .waf-dot {
+  animation: waf-llm-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes waf-llm-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .waf-phase-time {
   color: #6e7681;
   margin-left: auto;
@@ -1947,4 +1956,80 @@ button.secondary:hover:not(:disabled) {
 
 .waf-pr-link:hover {
   text-decoration: underline;
+}
+
+/* ─── LLM Stream panel ─────────────────────────────────────── */
+
+.llm-stream-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.llm-stream-filter {
+  margin-bottom: 0.25rem;
+}
+
+.llm-stream-filter label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.llm-stream-filter select {
+  min-width: 12rem;
+}
+
+.llm-stream-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.llm-stream-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+
+.llm-stream-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #484f58;
+}
+
+.llm-stream-dot-active {
+  background: #3fb950;
+  box-shadow: 0 0 6px #3fb950;
+}
+
+.llm-stream-clear {
+  margin-left: auto;
+}
+
+.llm-stream-error {
+  padding: 0.4rem 0.6rem;
+  background: rgba(248, 81, 73, 0.15);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #f85149;
+}
+
+.llm-stream-pre {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: #0d1117;
+  color: #e6edf3;
+  border-radius: 8px;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

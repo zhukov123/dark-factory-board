@@ -31,6 +31,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddScoped<TicketIdService>();
 builder.Services.AddSingleton<DagService>();
 builder.Services.AddSingleton<TemporalSignalService>();
+builder.Services.AddSingleton<LlmStreamBroadcaster>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -58,7 +59,8 @@ var protectedSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     "pick-next",
     "validate",
     "events",
-    "deps"
+    "deps",
+    "stream"
 };
 
 // Only serve static files for non-API paths; otherwise POST /tickets/... hits static middleware and returns 405
@@ -1153,6 +1155,43 @@ app.MapGet("/events/stream", async (string? ticket_id, HttpContext ctx, Cancella
             lastId = ev.Id;
         }
         try { await Task.Delay(1000, ct); } catch (TaskCanceledException) { break; }
+    }
+});
+
+// LLM token stream: worker POSTs chunks; clients GET SSE to receive every token
+app.MapPost("/stream/llm", async (HttpContext ctx, LlmStreamBroadcaster broadcaster, CancellationToken ct) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<LlmStreamChunkRequest>(ct);
+    if (body == null || string.IsNullOrEmpty(body.TicketId))
+    {
+        return Results.BadRequest(new { error = "ticket_id required" });
+    }
+    var ticketId = body.TicketId.Trim();
+    var phase = (body.Phase ?? "").Trim();
+    var delta = body.Delta ?? "";
+    await broadcaster.BroadcastAsync(ticketId, phase, delta, ct);
+    return Results.Ok();
+});
+
+app.MapGet("/stream/llm", async (string? ticket_id, HttpContext ctx, LlmStreamBroadcaster broadcaster, CancellationToken ct) =>
+{
+    ctx.Response.ContentType = "text/event-stream";
+    ctx.Response.Headers["Cache-Control"] = "no-cache";
+    ctx.Response.Headers["Connection"] = "keep-alive";
+    ctx.Response.Headers["X-Accel-Buffering"] = "no";
+
+    var id = broadcaster.Subscribe(string.IsNullOrWhiteSpace(ticket_id) ? null : ticket_id.Trim(), ctx.Response.Body, ct);
+    try
+    {
+        var connectedPayload = JsonSerializer.Serialize(new { connected = true, ticket_id = ticket_id }, sseJsonOptions);
+        await ctx.Response.WriteAsync($"data: {connectedPayload}\n\n", ct);
+        await ctx.Response.Body.FlushAsync(ct);
+        await Task.Delay(Timeout.Infinite, ct);
+    }
+    catch (OperationCanceledException) { }
+    finally
+    {
+        broadcaster.Unsubscribe(id);
     }
 });
 

@@ -21,7 +21,7 @@ from config import (
     LMSTUDIO_BASE_URL,
     LMSTUDIO_MODEL,
 )
-from taskboard_client import emit_event, _trunc, _trunc_long
+from taskboard_client import emit_event, post_llm_chunk, _trunc, _trunc_long
 
 
 def _llm_log_dir() -> Path:
@@ -92,14 +92,25 @@ class LLMLogHandler(BaseCallbackHandler):
         self._path.write_text(existing + "\n".join(parts), encoding="utf-8")
 
 
+class StreamToTaskBoardHandler(BaseCallbackHandler):
+    """Forwards each LLM token to TaskBoard /stream/llm for live UI streaming."""
+
+    def __init__(self, ticket_id: str | None, phase: str):
+        self.ticket_id = ticket_id
+        self.phase = phase
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        if self.ticket_id and token:
+            post_llm_chunk(self.ticket_id, self.phase, token)
+
+
 def _strip_thinking(text: str) -> str:
     """Remove <think>...</think> blocks so downstream only sees the actual response."""
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL | re.IGNORECASE).strip()
 
 
-def _run_config_with_llm_log(config: dict | None, step: str) -> dict:
-    """Add LLMLogHandler to config callbacks so every LLM call is logged to logs/llm/*.md."""
-    # Always log: use repo log dir (config may not be passed to nodes by the graph runtime)
+def _run_config_with_llm_log(config: dict | None, step: str, ticket_id: str | None = None) -> dict:
+    """Add LLMLogHandler and optionally StreamToTaskBoardHandler to config callbacks."""
     log_dir = _llm_log_dir()
     configurable = (config or {}).get("configurable") or {}
     thread_id = configurable.get("thread_id", "default")
@@ -107,6 +118,8 @@ def _run_config_with_llm_log(config: dict | None, step: str) -> dict:
     base = config or {}
     callbacks = list(base.get("callbacks") or [])
     callbacks.append(handler)
+    if ticket_id:
+        callbacks.append(StreamToTaskBoardHandler(ticket_id, step))
     return {**base, "callbacks": callbacks}
 
 
@@ -207,18 +220,24 @@ def build_graph(
 
     def planner(state: TaskState, config: dict | None = None) -> TaskState:
         logger.info("PLANNER: starting")
-        emit_event("worker.phase", _tid, {"phase": "planner", "detail": "generating checklist"})
+        emit_event("worker.phase", _tid, {"phase": "planner", "detail": "waiting for LLM response"})
         messages = [
             SystemMessage(content="You are a task planner. Given a task spec, output a short checklist of concrete steps (one per line). Reply with only the checklist, no preamble."),
             HumanMessage(content=state["task_spec"]),
         ]
         conf = config or {}
-        run_config = _run_config_with_llm_log(conf, "planner")
-        out = llm.invoke(messages, config=run_config)
-        content = out.content if hasattr(out, "content") else str(out)
-        content = _strip_thinking(content)
+        run_config = _run_config_with_llm_log(conf, "planner", _tid)
+        chunks_acc: list[str] = []
+        for chunk in llm.stream(messages, config=run_config):
+            c = (getattr(chunk, "content", None) or "") if chunk else ""
+            if c:
+                chunks_acc.append(c)
+                if _tid:
+                    post_llm_chunk(_tid, "planner", c)
+        content = _strip_thinking("".join(chunks_acc))
         lines = [x.strip() for x in content.splitlines() if x.strip()]
         logger.info("PLANNER: done, %d checklist items", len(lines))
+        emit_event("worker.phase", _tid, {"phase": "planner", "detail": "done"})
         emit_event("worker.plan", _tid, {"items": lines})
         return {**state, "checklist": lines}
 
@@ -227,7 +246,7 @@ def build_graph(
     IMPLEMENTER_MAX_TURNS = 15
 
     def implementer(state: TaskState, config: dict | None = None) -> TaskState:
-        emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "starting implementation"})
+        emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "waiting for LLM response"})
         human_content = f"Checklist:\n" + "\n".join(state["checklist"]) + "\n\nTask spec:\n" + state["task_spec"]
         reviewer_summary = (state.get("reviewer_summary") or "").strip()
         if reviewer_summary:
@@ -396,10 +415,12 @@ def review_pr_content(
     pr_diff: str,
     implementer_summary: str = "",
     ticket_id: str | None = None,
+    all_changed_files: list[str] | None = None,
 ) -> tuple[str, str]:
     """
     Run the Reviewer LLM on PR content (body + diff). Returns (verdict, summary).
     verdict is one of pass, fail, risky. Used by review_pr activity.
+    all_changed_files: from git so reviewer sees full list even if implementer reported fewer.
     """
     llm = _get_llm()
     if llm is None:
@@ -408,11 +429,14 @@ def review_pr_content(
         f"Task spec:\n{task_spec}\n\nChecklist:\n" + "\n".join(checklist)
         + f"\n\nPR description:\n{pr_body or '(none)'}"
     )
+    if all_changed_files:
+        review_content += f"\n\nAll files changed in this branch (from git):\n" + "\n".join(all_changed_files)
     if implementer_summary:
         review_content += f"\n\nImplementer summary (what was done):\n{implementer_summary}"
     if pr_diff:
-        if len(pr_diff) > 12000:
-            pr_diff = pr_diff[:6000] + "\n...(truncated)...\n" + pr_diff[-6000:]
+        # Scaffolding PRs can be large; allow up to 72k chars so reviewer can verify full checklist
+        if len(pr_diff) > 72000:
+            pr_diff = pr_diff[:36000] + "\n...(truncated)...\n" + pr_diff[-36000:]
         review_content += f"\n\n--- PR diff ---\n```\n{pr_diff}\n```"
     messages = [
         SystemMessage(
@@ -424,9 +448,15 @@ def review_pr_content(
     if ticket_id:
         log_dir = _llm_log_dir()
         config = {"configurable": {"thread_id": f"ticket-{ticket_id}", "llm_log_dir": str(log_dir)}}
-    run_config = _run_config_with_llm_log(config, "reviewer")
-    out = llm.invoke(messages, config=run_config)
-    raw = _strip_thinking(out.content if hasattr(out, "content") else str(out))
+    run_config = _run_config_with_llm_log(config, "reviewer", ticket_id)
+    chunks_acc: list[str] = []
+    for chunk in llm.stream(messages, config=run_config):
+        c = (getattr(chunk, "content", None) or "") if chunk else ""
+        if c:
+            chunks_acc.append(c)
+            if ticket_id:
+                post_llm_chunk(ticket_id, "reviewer", c)
+    raw = _strip_thinking("".join(chunks_acc))
     content = raw.lower()
     verdict = "pass"
     if "risky" in content:

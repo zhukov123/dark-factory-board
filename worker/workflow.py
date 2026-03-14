@@ -87,12 +87,47 @@ class DarkFactoryRun:
                 start_to_close_timeout=timedelta(hours=1),
             )
 
-            # 5. Run tests
-            await workflow.execute_activity(
-                "run_task_tests",
-                args=[ticket_id, workspace_path],
-                start_to_close_timeout=timedelta(minutes=10),
-            )
+            # 5. Run tests; on failure, route back to implementer with test output as feedback (same as reviewer failure)
+            max_test_fix_rounds = 5
+            tests_passed = False
+            for test_round in range(max_test_fix_rounds):
+                test_result = await workflow.execute_activity(
+                    "run_task_tests",
+                    args=[ticket_id, workspace_path],
+                    start_to_close_timeout=timedelta(minutes=10),
+                )
+                if test_result.get("success"):
+                    tests_passed = True
+                    break
+                log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
+                test_feedback = f"Tests failed. Fix the failing tests.\n\nTest output:\n{log_excerpt}"
+                await workflow.execute_activity(
+                    "transition_ticket",
+                    args=[ticket_id, "InProgress", "Tests failed; re-running implementer", "worker"],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                await workflow.execute_activity(
+                    "execute_task_with_lang_graph",
+                    args=[ticket_id, task_spec, workspace_path, branch, test_feedback],
+                    start_to_close_timeout=timedelta(hours=1),
+                )
+
+            if not tests_passed:
+                workflow.logger.info(
+                    "Test fix rounds exhausted; leaving ticket In Progress",
+                    extra={"ticket_id": ticket_id},
+                )
+                await workflow.execute_activity(
+                    "transition_ticket",
+                    args=[ticket_id, "InProgress", "Tests failed after retries", "worker"],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                await workflow.execute_activity(
+                    "close_task",
+                    args=[ticket_id, owner, "InProgress"],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                continue
 
             # 6. Create PR (Implementer handoff)
             pr_result = await workflow.execute_activity(
@@ -118,6 +153,7 @@ class DarkFactoryRun:
                 merged = False
             else:
                 merged = False
+                closed_due_to_test_failure = False
                 max_review_rounds = 5
                 for round_one in range(max_review_rounds):
                     review_round = round_one + 1
@@ -153,11 +189,47 @@ class DarkFactoryRun:
                             args=[ticket_id, task_spec, workspace_path, branch, body],
                             start_to_close_timeout=timedelta(hours=1),
                         )
-                        await workflow.execute_activity(
-                            "run_task_tests",
-                            args=[ticket_id, workspace_path],
-                            start_to_close_timeout=timedelta(minutes=10),
-                        )
+                        # Run tests; on failure, route back to implementer with test output (same as initial path)
+                        tests_passed_after_review = False
+                        for _ in range(max_test_fix_rounds):
+                            test_result = await workflow.execute_activity(
+                                "run_task_tests",
+                                args=[ticket_id, workspace_path],
+                                start_to_close_timeout=timedelta(minutes=10),
+                            )
+                            if test_result.get("success"):
+                                tests_passed_after_review = True
+                                break
+                            log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
+                            test_feedback = f"Tests failed. Fix the failing tests.\n\nTest output:\n{log_excerpt}"
+                            await workflow.execute_activity(
+                                "transition_ticket",
+                                args=[ticket_id, "InProgress", "Tests failed; re-running implementer", "worker"],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            await workflow.execute_activity(
+                                "execute_task_with_lang_graph",
+                                args=[ticket_id, task_spec, workspace_path, branch, test_feedback],
+                                start_to_close_timeout=timedelta(hours=1),
+                            )
+                        if not tests_passed_after_review:
+                            workflow.logger.info(
+                                "Test fix rounds exhausted after review; leaving ticket In Progress",
+                                extra={"ticket_id": ticket_id},
+                            )
+                            await workflow.execute_activity(
+                                "transition_ticket",
+                                args=[ticket_id, "InProgress", "Tests failed after retries", "worker"],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            await workflow.execute_activity(
+                                "close_task",
+                                args=[ticket_id, owner, "InProgress"],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            merged = False
+                            closed_due_to_test_failure = True
+                            break
                         pr_result = await workflow.execute_activity(
                             "open_or_update_pr",
                             args=[ticket_id, workspace_path, branch, effective_repo, pr_number],
@@ -205,7 +277,7 @@ class DarkFactoryRun:
                             )
                             merged = True
                         break
-                if not merged and not review_result.get("needs_approval"):
+                if not merged and not review_result.get("needs_approval") and not closed_due_to_test_failure:
                     workflow.logger.info("Review rounds exhausted; leaving ticket In Progress", extra={"ticket_id": ticket_id})
                     await workflow.execute_activity(
                         "close_task",

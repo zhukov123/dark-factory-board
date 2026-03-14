@@ -50,6 +50,8 @@ public sealed record ApprovalDecisionRequest(string DecisionId, string? Note);
 
 public sealed record CreateEventRequest(string? TicketId, string Type, object? Payload);
 
+public sealed record LlmStreamChunkRequest(string TicketId, string? Phase, string? Delta);
+
 public sealed record PostTicketUpdateRequest(string Message, string? Author);
 
 public sealed record TicketDto(

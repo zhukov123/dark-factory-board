@@ -43,6 +43,26 @@ def _sanitize_url(url: str) -> str:
     return re.sub(r"://[^@]+@", "://***@", url)
 
 
+def _format_pr_body_from_task_result(tr: dict, ticket_id: str) -> str:
+    """Build a readable Markdown PR description from task_result.json (not raw JSON)."""
+    sections = []
+    spec = (tr.get("task_spec") or "").strip()
+    if spec:
+        sections.append("## Task\n\n" + spec)
+    checklist = tr.get("checklist") or []
+    if checklist:
+        sections.append("## Checklist\n\n" + "\n".join(f"- {item}" for item in checklist))
+    summary = (tr.get("implementer_summary") or "").strip()
+    if summary:
+        sections.append("## Summary\n\n" + summary)
+    files_changed = tr.get("files_changed") or []
+    if files_changed:
+        sections.append("## Files changed\n\n" + "\n".join(f"- `{f}`" for f in files_changed))
+    if not sections:
+        return f"Task {ticket_id}"
+    return "\n\n---\n\n".join(sections)
+
+
 def _build_task_spec(ticket: dict) -> str:
     """Build Markdown task spec from ticket (plan §4)."""
     title = ticket.get("title", "")
@@ -280,16 +300,23 @@ def _ensure_repo_exists(repo_slug: str) -> None:
             logger.warning("GitHub ensure repo failed: %s", e)
 
 
+def _short_run_guid() -> str:
+    """8-char hex guid for branch/PR uniqueness."""
+    import uuid
+    return uuid.uuid4().hex[:8]
+
+
 @activity.defn
 async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = None) -> dict:
-    """Clone repo (or use WORKSPACE_PATH), create branch task/{ticket_id_slug}-{short_id}, write metadata, PATCH run.
+    """Clone repo (or use WORKSPACE_PATH), create branch task/{ticket_id_slug}-{short_id}-{guid}, write metadata, PATCH run.
     Returns workspace_path, branch, and repo (for PR)."""
     logger.info("Prepare workspace started for %s", ticket_id)
     emit_event("worker.phase", ticket_id, {"phase": "prepare_workspace", "detail": "cloning repo & creating branch"})
     import json
     slug = _slug(ticket_id)
     short_id = ticket_id[-6:] if len(ticket_id) >= 6 else ticket_id
-    branch = f"task/{slug}-{short_id}"
+    run_guid = _short_run_guid()
+    branch = f"task/{slug}-{short_id}-{run_guid}"
 
     # When WORKSPACE_PATH is set, use a per-ticket subdir under it (clean folder per ticket, same as clone path)
     root = Path(WORKSPACE_PATH).resolve() if WORKSPACE_PATH else Path(REPO_CLONE_ROOT)
@@ -360,6 +387,7 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
             meta = {
                 "ticket_id": ticket_id,
                 "branch": branch,
+                "run_guid": run_guid,
                 "base_commit": base_commit,
             }
             meta_path = workspace_path / ".dark-factory.json"
@@ -372,7 +400,7 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
     else:
         workspace_path.mkdir(parents=True, exist_ok=True)
         meta_path = workspace_path / ".dark-factory.json"
-        meta_path.write_text(json.dumps({"ticket_id": ticket_id, "branch": branch}, indent=2))
+        meta_path.write_text(json.dumps({"ticket_id": ticket_id, "branch": branch, "run_guid": run_guid}, indent=2))
         await patch_run(ticket_id, branch=branch)
         await post_update(ticket_id, f"Workspace prepared (no clone) at {workspace_path}", author="worker")
 
@@ -512,7 +540,36 @@ async def open_or_update_pr(
             raise RuntimeError(f"Open PR (Gitea/repo check): {err}") from e
 
     body_path = path / "task_result.json"
-    body = body_path.read_text() if body_path.exists() else f"Task {ticket_id}"
+    tr: dict = {}
+    if body_path.exists():
+        try:
+            tr = json.loads(body_path.read_text())
+        except Exception:
+            pass
+    body = _format_pr_body_from_task_result(tr, ticket_id) if tr else f"Task {ticket_id}"
+
+    # Descriptive PR title: [ticket_id] Task title (run_guid)
+    run_guid = ""
+    meta_path = path / ".dark-factory.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+            run_guid = (meta.get("run_guid") or "").strip()
+        except Exception:
+            pass
+    if not run_guid and branch.count("-") >= 2:
+        # Branch is task/slug-id-guid; last segment is 8-char guid
+        last = branch.split("-")[-1]
+        if len(last) == 8 and all(c in "0123456789abcdef" for c in last.lower()):
+            run_guid = last
+    title_snippet = f"Task ({run_guid})" if run_guid else "Task"
+    if tr:
+        spec = (tr.get("task_spec") or "").strip()
+        if spec:
+            first_line = spec.split("\n")[0].strip().lstrip("#").strip()
+            if first_line:
+                title_snippet = f"{first_line[:50].rstrip()} ({run_guid})" if run_guid else first_line[:60]
+    pr_title = f"[{ticket_id}] {title_snippet}"
 
     if GITEA_URL and GITEA_TOKEN and repo_slug:
         import httpx
@@ -648,11 +705,11 @@ async def open_or_update_pr(
                 )
                 return {"pr_url": None, "pr_number": 0}
             try:
-                logger.info("Creating Gitea PR: head=%s base=%s", branch, default_branch)
+                logger.info("Creating Gitea PR: head=%s base=%s title=%s", branch, default_branch, pr_title)
                 pr_r = httpx.post(
                     f"{base_url}/pulls",
                     headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-                    json={"title": f"[{ticket_id}] Task", "body": body[:5000], "head": branch, "base": default_branch},
+                    json={"title": pr_title, "body": body[:5000], "head": branch, "base": default_branch},
                     timeout=15,
                 )
                 if pr_r.status_code >= 400:
@@ -712,7 +769,7 @@ async def open_or_update_pr(
                 from github import Github
                 gh = Github(GITHUB_TOKEN)
                 repo_obj = gh.get_repo(repo_slug)
-                pr = repo_obj.create_pull(title=f"[{ticket_id}] Task", body=body[:5000], head=branch, base=repo_obj.default_branch)
+                pr = repo_obj.create_pull(title=pr_title, body=body[:5000], head=branch, base=repo_obj.default_branch)
                 pr_url = pr.html_url
                 pr_number = pr.number
             except Exception as e:
@@ -830,7 +887,37 @@ async def review_pr(
         except Exception as e:
             logger.warning("review_pr: fetch PR (GitHub) failed: %s", e)
 
+    # Get full list of changed files from git so reviewer can verify even when task_result files_changed is incomplete
+    all_changed_files: list[str] = []
+    try:
+        import subprocess
+        res = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0 and res.stdout:
+            all_changed_files = [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
+        if not all_changed_files:
+            # Try against merge base with default branch (e.g. main)
+            for base in ["origin/main", "origin/master", "main", "master"]:
+                res = subprocess.run(
+                    ["git", "diff", "--name-only", f"{base}...HEAD"],
+                    cwd=path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if res.returncode == 0 and res.stdout:
+                    all_changed_files = [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
+                    break
+    except Exception as e:
+        logger.debug("review_pr: git diff --name-only failed: %s", e)
+
     from langgraph_runner import review_pr_content
+    emit_event("worker.phase", ticket_id, {"phase": "reviewer", "detail": "waiting for LLM response"})
     verdict, body = review_pr_content(
         task_spec=task_spec,
         checklist=checklist,
@@ -838,7 +925,9 @@ async def review_pr(
         pr_diff=pr_diff,
         implementer_summary=implementer_summary,
         ticket_id=ticket_id,
+        all_changed_files=all_changed_files,
     )
+    emit_event("worker.phase", ticket_id, {"phase": "reviewer", "detail": "done"})
     verdict = (verdict or "pass").strip().lower()
 
     event = "APPROVE" if verdict == "pass" else ("REQUEST_CHANGES" if verdict == "fail" else "COMMENT")

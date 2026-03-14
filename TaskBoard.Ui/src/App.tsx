@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { TaskBoardApiClient, type TicketPayload } from './apiClient'
 import { GlobalActivityMonitor } from './components/GlobalActivityMonitor'
+import { LlmStreamPanel } from './components/LlmStreamPanel'
 import { KanbanColumn } from './components/KanbanColumn'
 import { TicketModal } from './components/TicketModal'
 import { TokenGate } from './components/TokenGate'
@@ -18,6 +19,7 @@ const SECTION_KEYS = {
   board: 'taskboard_section_board',
   insights: 'taskboard_section_insights',
   monitor: 'taskboard_section_monitor',
+  llmStream: 'taskboard_section_llm_stream',
 } as const
 
 function useSectionCollapse(key: string, defaultOpen = true) {
@@ -63,6 +65,8 @@ function App() {
   const [boardOpen, toggleBoard] = useSectionCollapse(SECTION_KEYS.board)
   const [insightsOpen, toggleInsights] = useSectionCollapse(SECTION_KEYS.insights)
   const [monitorOpen, toggleMonitor] = useSectionCollapse(SECTION_KEYS.monitor)
+  const [llmStreamOpen, toggleLlmStream] = useSectionCollapse(SECTION_KEYS.llmStream, false)
+  const [llmStreamTicketId, setLlmStreamTicketId] = useState<string | null>(null)
 
   const boardDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleBoardEvent = useCallback(() => {
@@ -511,6 +515,41 @@ function App() {
         {monitorOpen && (
           <div className="app-section-body">
             <GlobalActivityMonitor client={client} onBoardEvent={handleBoardEvent} />
+          </div>
+        )}
+      </section>
+
+      {/* ── LLM token stream (collapsible) ───────────────────── */}
+      <section className="panel">
+        <button type="button" className="app-section-header" onClick={toggleLlmStream}>
+          <span className="app-section-chevron">{llmStreamOpen ? '▾' : '▸'}</span>
+          <span className="app-section-title">LLM Stream</span>
+        </button>
+        {llmStreamOpen && (
+          <div className="app-section-body">
+            <div className="llm-stream-filter">
+              <label>
+                Ticket filter
+                <select
+                  value={llmStreamTicketId ?? ''}
+                  onChange={(e) => setLlmStreamTicketId(e.target.value || null)}
+                >
+                  <option value="">All tickets</option>
+                  {tickets.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.id}: {t.title.slice(0, 40)}
+                      {t.title.length > 40 ? '…' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <LlmStreamPanel
+              baseUrl={baseUrl}
+              token={token}
+              ticketIdFilter={llmStreamTicketId}
+              onUnauthorized={() => setAuthInvalid(true)}
+            />
           </div>
         )}
       </section>

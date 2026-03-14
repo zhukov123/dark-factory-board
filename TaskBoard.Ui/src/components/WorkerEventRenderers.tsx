@@ -169,11 +169,16 @@ export function EventRow({ event }: { event: WorkerEvent }) {
     const phase = String(p.phase ?? '').replace(/_/g, ' ').toUpperCase()
     const detail = String(p.detail ?? '')
     const isDone = detail === 'done' || detail.startsWith('done')
+    const isWaitingLlm = !isDone && (detail === 'waiting for LLM response' || detail.includes('waiting for LLM'))
     return (
-      <div className={`waf-tool-call ${isDone ? 'waf-phase-done-inline' : ''}`}>
+      <div
+        className={`waf-tool-call ${isDone ? 'waf-phase-done-inline' : ''} ${isWaitingLlm ? 'waf-phase-waiting-llm' : ''}`}
+      >
         <span className={`waf-dot ${isDone ? 'waf-dot-done' : 'waf-dot-active'}`} />
         <span className="waf-phase-label">{phase}</span>
-        {detail && detail !== 'done' && <span className="waf-phase-detail">{detail}</span>}
+        {detail && detail !== 'done' && (
+          <span className="waf-phase-detail">{isWaitingLlm ? 'Waiting for LLM…' : detail}</span>
+        )}
       </div>
     )
   }

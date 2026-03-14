@@ -163,6 +163,26 @@ def emit_event(event_type: str, ticket_id: str | None = None, payload: dict | No
     threading.Thread(target=_send, daemon=True).start()
 
 
+def post_llm_chunk(ticket_id: str, phase: str, delta: str) -> None:
+    """Fire-and-forget: POST one LLM token/chunk to /stream/llm for live streaming in the UI.
+    Safe to call from sync code (e.g. inside LangGraph); does not block."""
+    if not ticket_id or not delta:
+        return
+
+    def _send():
+        try:
+            httpx.post(
+                f"{TASKBOARD_URL}/stream/llm",
+                json={"ticket_id": ticket_id, "phase": phase, "delta": delta},
+                headers=_headers(),
+                timeout=2,
+            )
+        except Exception as exc:
+            _emit_log.debug("post_llm_chunk %s failed: %s", phase, exc)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 async def post_event(event_type: str, ticket_id: str | None = None, payload: dict | None = None) -> dict:
     """POST /events."""
     async with httpx.AsyncClient() as client:
