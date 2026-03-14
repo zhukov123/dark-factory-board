@@ -154,7 +154,7 @@ class DarkFactoryRun:
             else:
                 merged = False
                 closed_due_to_test_failure = False
-                max_review_rounds = 5
+                max_review_rounds = 20
                 for round_one in range(max_review_rounds):
                     review_round = round_one + 1
                     review_result = await workflow.execute_activity(
