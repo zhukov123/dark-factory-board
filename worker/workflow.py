@@ -93,7 +93,8 @@ class DarkFactoryRun:
                         start_to_close_timeout=timedelta(seconds=30),
                     )
                     self._approval_result = None
-                    await workflow.await_condition(lambda: self._approval_result is not None)
+                    _wait = getattr(workflow, "wait_condition", None) or workflow.await_condition
+                    await _wait(lambda: self._approval_result is not None)
                     if self._approval_result == "rejected":
                         await workflow.execute_activity(
                             "transition_ticket",

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { TaskBoardApiClient, TicketPatchPayload } from '../apiClient'
 import { formatError, invalidateBoard, splitCsv, splitLines } from '../utils'
 import { STATUSES, type TicketDto, type TicketStatus } from '../types'
+import { WorkerActivityFeed } from './WorkerActivityFeed'
 
 export function TicketModal({
   ticket,
@@ -417,12 +418,19 @@ export function TicketModal({
               )}
             </div>
 
-            <section className="activity-section activity-pane-full">
-              <div className="modal-section-label">Activity</div>
+            <WorkerActivityFeed
+              ticketId={ticket.id}
+              ticketStatus={ticket.status}
+              client={client}
+              fallbackEvents={eventsQuery.data}
+            />
+
+            <section className="activity-section" style={{ marginTop: '0.6rem' }}>
+              <div className="modal-section-label">Post Update</div>
               <div className="activity-post">
                 <input
                   type="text"
-                  placeholder="Post an update (e.g. Started working, Doing QA, Completed)"
+                  placeholder="Post an update…"
                   value={updateMessage}
                   onChange={(e) => setUpdateMessage(e.target.value)}
                   onKeyDown={(e) => {
@@ -440,7 +448,7 @@ export function TicketModal({
                 <input
                   type="text"
                   className="activity-author"
-                  placeholder="Author (optional)"
+                  placeholder="Author"
                   value={updateAuthor}
                   onChange={(e) => setUpdateAuthor(e.target.value)}
                 />
@@ -459,42 +467,6 @@ export function TicketModal({
                   {postUpdateMutation.isPending ? 'Posting…' : 'Post'}
                 </button>
               </div>
-              <ul className="activity-list">
-                {(eventsQuery.data ?? []).map((event) => {
-                  const payload = event.payload as Record<string, unknown> | null
-                  const isUpdate = event.type === 'ticket.update'
-                  const message = isUpdate && payload && typeof payload.message === 'string' ? payload.message : null
-                  const author = isUpdate && payload && typeof payload.author === 'string' ? payload.author : null
-                  return (
-                    <li key={event.id} className="activity-item">
-                      <span className="activity-time">
-                        {new Date(event.createdAt).toLocaleString()}
-                      </span>
-                      {isUpdate && message != null ? (
-                        <>
-                          {author && <span className="activity-author-badge">{author}</span>}
-                          <span className="activity-message">{message}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="activity-type">{event.type}</span>
-                          {event.payload != null &&
-                          typeof event.payload === 'object' &&
-                          Object.keys(event.payload as object).length > 0 ? (
-                            <details className="activity-payload">
-                              <summary>details</summary>
-                              <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                            </details>
-                          ) : null}
-                        </>
-                      )}
-                    </li>
-                  )
-                })}
-                {(eventsQuery.data ?? []).length === 0 && (
-                  <li className="activity-empty">No activity yet. Post an update above.</li>
-                )}
-              </ul>
             </section>
           </div>
         </div>

@@ -22,12 +22,19 @@ from activities import (
 )
 
 
+class _FlushHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every record so logs appear in real-time."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", force=True)
     import sys
-    for h in logging.root.handlers:
-        h.setStream(sys.stderr)
-        h.flush = lambda: sys.stderr.flush()
+    handler = _FlushHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.root.handlers = [handler]
+    logging.root.setLevel(logging.INFO)
     logger = logging.getLogger("worker")
 
     logger.info("Connecting to Temporal at %s", TEMPORAL_HOST)

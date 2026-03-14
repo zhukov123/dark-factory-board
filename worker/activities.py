@@ -18,6 +18,7 @@ from taskboard_client import (
     transition,
     post_update,
     upload_attachment,
+    emit_event,
 )
 
 
@@ -176,6 +177,7 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
     """Clone repo (or use WORKSPACE_PATH), create branch task/{ticket_id_slug}-{short_id}, write metadata, PATCH run.
     Returns workspace_path, branch, and repo (for PR)."""
     logger.info("Prepare workspace started for %s", ticket_id)
+    emit_event("worker.phase", ticket_id, {"phase": "prepare_workspace", "detail": "cloning repo & creating branch"})
     import json
     slug = _slug(ticket_id)
     short_id = ticket_id[-6:] if len(ticket_id) >= 6 else ticket_id
@@ -288,6 +290,7 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
         await post_update(ticket_id, f"Workspace prepared (no clone) at {workspace_path}", author="worker")
 
     logger.info("Prepare workspace finished for %s -> %s", ticket_id, workspace_path)
+    emit_event("worker.phase", ticket_id, {"phase": "prepare_workspace", "detail": "done"})
     return {"workspace_path": str(workspace_path), "branch": branch, "repo": effective}
 
 
@@ -298,6 +301,7 @@ async def execute_task_with_lang_graph(
 ) -> dict:
     """Run LangGraph; on interrupt return needs_approval + decision_id. Write task_result.json and upload."""
     logger.info("Execute (LangGraph) started for %s", ticket_id)
+    emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": "starting LangGraph"})
     try:
         from langgraph_runner import run_task
     except ImportError:
@@ -328,6 +332,7 @@ async def execute_task_with_lang_graph(
         content = result_path.read_bytes()
         await upload_attachment(ticket_id, "task_result.json", content, "application/json")
     logger.info("Execute (LangGraph) finished for %s success=%s", ticket_id, success)
+    emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": f"done — {'success' if success else 'failed'}"})
     if success:
         return {"success": True}
     return {"success": False, "error": "reviewer failed"}
@@ -413,6 +418,7 @@ def _post_review_and_merge_github(pr, body: str) -> None:
 @activity.defn
 async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, repo: str | None = None) -> dict:
     """Push branch, create PR (Gitea or GitHub), post reviewer-persona review, merge when pass, PATCH run (pr_number, pr_url), transition to Review, upload task_result and log."""
+    emit_event("worker.phase", ticket_id, {"phase": "open_pr", "detail": "pushing branch & creating PR"})
     path = Path(workspace_path)
     repo_slug = repo or _repo_slug_from_path(path)
     pr_url = None
@@ -440,6 +446,7 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
                 if getattr(r, "name", None) == "origin":
                     r.push(branch)
                     logger.info("Push succeeded for branch %s", branch)
+                    emit_event("worker.pr", ticket_id, {"action": "pushed", "branch": branch})
                     break
         except Exception as e:
             logger.error("Push failed: %s", e)
@@ -468,6 +475,7 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
             pr_j = pr_r.json()
             pr_number = pr_j.get("number") or pr_j.get("index") or 0
             pr_url = pr_j.get("html_url") or f"{GITEA_URL}/{owner}/{name}/pulls/{pr_number}"
+            emit_event("worker.pr", ticket_id, {"action": "created", "pr_number": pr_number, "url": pr_url})
             # Post review
             try:
                 task_result = json.loads(body) if body else {}
@@ -492,8 +500,10 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
                     )
                     merge_r.raise_for_status()
                     logger.info("Gitea PR #%d merged successfully", pr_number)
+                    emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "url": pr_url, "merged": True})
                 except Exception as merge_err:
                     logger.warning("Gitea PR merge failed: %s", merge_err)
+                    emit_event("worker.pr", ticket_id, {"action": "merge_failed", "pr_number": pr_number, "url": pr_url})
         except Exception as e:
             await patch_run(ticket_id, last_error=str(e))
             return {"pr_url": None, "pr_number": 0}
@@ -621,6 +631,7 @@ async def transition_ticket(ticket_id: str, to: str, note: str | None = None, by
 @activity.defn
 async def close_task(ticket_id: str, owner: str) -> None:
     """POST /runs/release, transition ticket to Done, post update."""
+    emit_event("worker.phase", ticket_id, {"phase": "close_task", "detail": "releasing & transitioning to Done"})
     result = await release(ticket_id, owner)
     if not result.get("released"):
         raise RuntimeError(result.get("error", "release failed"))

@@ -1120,6 +1120,42 @@ app.MapGet("/events", async (
     return Results.Ok(events.Select(DtoMapping.ToEventDto).ToList());
 });
 
+var sseJsonOptions = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower,
+};
+
+app.MapGet("/events/stream", async (string? ticket_id, HttpContext ctx, CancellationToken ct) =>
+{
+    ctx.Response.ContentType = "text/event-stream";
+    ctx.Response.Headers["Cache-Control"] = "no-cache";
+    ctx.Response.Headers["Connection"] = "keep-alive";
+    ctx.Response.Headers["X-Accel-Buffering"] = "no";
+
+    long lastId = 0;
+    while (!ct.IsCancellationRequested)
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TaskBoardDbContext>();
+
+        var query = db.Events.Where(e => e.Id > lastId);
+        if (!string.IsNullOrWhiteSpace(ticket_id))
+            query = query.Where(e => e.TicketId == ticket_id);
+
+        var newEvents = await query.OrderBy(e => e.Id).Take(50).ToListAsync(ct);
+        foreach (var ev in newEvents)
+        {
+            var dto = DtoMapping.ToEventDto(ev);
+            var json = JsonSerializer.Serialize(dto, sseJsonOptions);
+            await ctx.Response.WriteAsync($"event: {ev.Type}\ndata: {json}\nid: {ev.Id}\n\n", ct);
+            await ctx.Response.Body.FlushAsync(ct);
+            lastId = ev.Id;
+        }
+        try { await Task.Delay(1000, ct); } catch (TaskCanceledException) { break; }
+    }
+});
+
 var attachmentBasePath = builder.Configuration["Attachments:BasePath"]
     ?? Path.Combine(Path.GetTempPath(), "taskboard-attachments");
 Directory.CreateDirectory(attachmentBasePath);

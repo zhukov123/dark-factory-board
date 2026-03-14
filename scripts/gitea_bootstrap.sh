@@ -42,7 +42,9 @@ if [ -n "$CONTAINER" ]; then
     --must-change-password=false 2>/dev/null || true
 fi
 
-# Create API token
+# Create API token (delete existing token with same name first)
+curl -s -X DELETE "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens/e2e" \
+  -u "$ADMIN_USER:$ADMIN_PASS" >/dev/null 2>&1 || true
 TOKEN_RESP=$(curl -s -X POST "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" \
   -u "$ADMIN_USER:$ADMIN_PASS" \
   -H "Content-Type: application/json" \
@@ -53,13 +55,15 @@ if [ -z "$GITEA_TOKEN" ]; then
   exit 1
 fi
 
-# Create repo (owner = admin user)
+# Delete and recreate repo for a clean slate
+curl -s -X DELETE "$GITEA_URL/api/v1/repos/$ADMIN_USER/$REPO_NAME" \
+  -H "Authorization: token $GITEA_TOKEN" >/dev/null 2>&1 || true
 CREATE_RESP=$(curl -s -X POST "$GITEA_URL/api/v1/user/repos" \
   -H "Authorization: token $GITEA_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"name\":\"$REPO_NAME\",\"private\":true}")
+  -d "{\"name\":\"$REPO_NAME\",\"auto_init\":false}")
 if echo "$CREATE_RESP" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-  echo "Repo $ADMIN_USER/$REPO_NAME created or already exists."
+  echo "Repo $ADMIN_USER/$REPO_NAME created (fresh)."
 else
   echo "Create repo response: $CREATE_RESP"
 fi

@@ -1,7 +1,11 @@
 """HTTP client for the TaskBoard API (snake_case JSON)."""
+import logging
+import threading
 import httpx
 
 from config import TASKBOARD_URL, TASKBOARD_TOKEN
+
+_emit_log = logging.getLogger("emit_event")
 
 
 def _headers():
@@ -134,6 +138,24 @@ async def post_update(ticket_id: str, message: str, author: str | None = None) -
         )
         r.raise_for_status()
         return r.json() if r.content else {}
+
+
+def _trunc(s: str, n: int = 200) -> str:
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def emit_event(event_type: str, ticket_id: str | None = None, payload: dict | None = None) -> None:
+    """Fire-and-forget: POST /events in a daemon thread so it never blocks the caller.
+    Safe to call from both sync and async code."""
+    body = {"type": event_type, "ticket_id": ticket_id, "payload": payload or {}}
+
+    def _send():
+        try:
+            httpx.post(f"{TASKBOARD_URL}/events", json=body, headers=_headers(), timeout=5)
+        except Exception as exc:
+            _emit_log.debug("emit_event %s failed: %s", event_type, exc)
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 async def post_event(event_type: str, ticket_id: str | None = None, payload: dict | None = None) -> dict:

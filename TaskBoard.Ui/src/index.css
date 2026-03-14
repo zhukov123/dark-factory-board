@@ -1371,3 +1371,266 @@ button.secondary:hover:not(:disabled) {
     grid-column: auto;
   }
 }
+
+/* ─── Worker Activity Feed ────────────────────────────────── */
+
+.waf-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.waf-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.waf-title {
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #4a6178;
+}
+
+.waf-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #10b981;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  letter-spacing: 0.08em;
+}
+
+.waf-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: waf-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes waf-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.waf-feed {
+  flex: 1;
+  overflow-y: auto;
+  background: #0d1117;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #c9d1d9;
+  min-height: 120px;
+  max-height: 420px;
+}
+
+.waf-empty {
+  color: #6e7681;
+  font-style: italic;
+  padding: 1rem 0;
+  text-align: center;
+}
+
+.waf-phase {
+  margin-bottom: 0.4rem;
+}
+
+.waf-phase-header {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.2rem 0;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.waf-phase-header:hover {
+  color: #e6edf3;
+}
+
+.waf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.waf-dot-active {
+  background: #58a6ff;
+  box-shadow: 0 0 6px rgba(88, 166, 255, 0.5);
+}
+
+.waf-dot-done {
+  background: #3fb950;
+}
+
+.waf-phase-label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e6edf3;
+}
+
+.waf-phase-detail {
+  color: #8b949e;
+  flex: 1;
+}
+
+.waf-phase-time {
+  color: #6e7681;
+  margin-left: auto;
+  font-size: 0.72rem;
+}
+
+.waf-chevron {
+  color: #6e7681;
+  font-size: 0.7rem;
+}
+
+.waf-phase-body {
+  border-left: 2px solid #21262d;
+  margin-left: 3px;
+  padding-left: 1rem;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+.waf-plan {
+  padding: 0.2rem 0;
+}
+
+.waf-plan-item {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+  color: #8b949e;
+}
+
+.waf-plan-num {
+  color: #6e7681;
+  min-width: 1.4em;
+  text-align: right;
+}
+
+.waf-tool-call {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.15rem 0;
+}
+
+.waf-icon {
+  font-size: 0.82rem;
+  width: 1.2em;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.waf-tool-name {
+  color: #d2a8ff;
+  white-space: nowrap;
+}
+
+.waf-tool-arg {
+  color: #8b949e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
+
+.waf-tool-result {
+  color: #6e7681;
+  white-space: nowrap;
+}
+
+.waf-tool-result::before {
+  content: '→ ';
+  color: #484f58;
+}
+
+.waf-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.waf-verdict {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+}
+
+.waf-verdict-pass {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.waf-verdict-fail {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.15);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.waf-verdict-risky {
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+.waf-verdict-summary {
+  color: #8b949e;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.waf-pr-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0;
+}
+
+.waf-pr-arrow {
+  color: #58a6ff;
+}
+
+.waf-pr-label {
+  color: #c9d1d9;
+}
+
+.waf-pr-link {
+  color: #58a6ff;
+  text-decoration: none;
+  font-size: 0.74rem;
+}
+
+.waf-pr-link:hover {
+  text-decoration: underline;
+}

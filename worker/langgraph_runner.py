@@ -21,6 +21,7 @@ from config import (
     LMSTUDIO_BASE_URL,
     LMSTUDIO_MODEL,
 )
+from taskboard_client import emit_event, _trunc
 
 
 def _llm_log_dir() -> Path:
@@ -177,9 +178,15 @@ def _tools(workspace_path: str):
 def _get_llm():
     """Return the configured LLM: OpenRouter if key set, else LM Studio if URL set, else None."""
     if OPENROUTER_API_KEY:
-        from langchain_openrouter import ChatOpenRouter
-        kwargs = {"model": OPENROUTER_MODEL, "temperature": 0, "openrouter_api_key": OPENROUTER_API_KEY}
-        return ChatOpenRouter(**kwargs)
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+            model=OPENROUTER_MODEL,
+            temperature=0,
+            request_timeout=120,
+            max_retries=2,
+        )
     if LMSTUDIO_BASE_URL:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
@@ -191,15 +198,17 @@ def _get_llm():
     return None
 
 
-def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
+def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None, ticket_id: str | None = None):
     llm = _get_llm()
     if llm is None:
         raise ValueError("No LLM configured. Set OPENROUTER_API_KEY or LMSTUDIO_BASE_URL.")
     tools = _tools(workspace_path)
     llm_with_tools = llm.bind_tools(tools)
+    _tid = ticket_id
 
     def planner(state: TaskState, config: dict | None = None) -> TaskState:
         logger.info("PLANNER: starting")
+        emit_event("worker.phase", _tid, {"phase": "planner", "detail": "generating checklist"})
         messages = [
             SystemMessage(content="You are a task planner. Given a task spec, output a short checklist of concrete steps (one per line). Reply with only the checklist, no preamble."),
             HumanMessage(content=state["task_spec"]),
@@ -211,6 +220,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
         content = _strip_thinking(content)
         lines = [x.strip() for x in content.splitlines() if x.strip()]
         logger.info("PLANNER: done, %d checklist items", len(lines))
+        emit_event("worker.plan", _tid, {"items": lines})
         return {**state, "checklist": lines}
 
     tool_map = {t.name: t for t in tools}
@@ -218,6 +228,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
     IMPLEMENTER_MAX_TURNS = 15
 
     def implementer(state: TaskState, config: dict | None = None) -> TaskState:
+        emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "starting implementation"})
         messages: list = [
             SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for tests. After seeing tool results, call more tools as needed until the checklist is done; then reply with a short summary and no further tool calls."),
             HumanMessage(content=f"Checklist:\n" + "\n".join(state["checklist"]) + "\n\nTask spec:\n" + state["task_spec"]),
@@ -249,14 +260,23 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
                             path = args.get("relative_path", "")
                             if path:
                                 edits.append(path)
+                                line_count = len(args.get("content", "").splitlines())
+                                emit_event("worker.file_edit", _tid, {"path": path, "lines": line_count})
                     except Exception as e:
                         result = str(e)
+                emit_event("worker.tool_call", _tid, {
+                    "tool": name,
+                    "args_summary": _trunc(json.dumps(args, default=str)),
+                    "result_summary": _trunc(str(result)),
+                })
                 tool_id = tc.get("id") or tc.get("name", "")
                 messages.append(ToolMessage(content=result, tool_call_id=tool_id))
+        emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "done"})
         return {**state, "current_file_edits": edits, "implementer_summary": last_summary}
 
     def reviewer(state: TaskState, config: dict | None = None) -> TaskState:
         round_num = state.get("review_round", 0) + 1
+        emit_event("worker.phase", _tid, {"phase": "reviewer", "detail": f"round {round_num}"})
         edited_files = state.get("current_file_edits") or []
         files_edited = ", ".join(edited_files)
         implementer_summary = (state.get("implementer_summary") or "").strip()
@@ -293,11 +313,11 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
             logger.info("REVIEWER: round %d fail -> auto-pass", round_num)
             verdict = "pass"
         logger.info("REVIEWER: verdict=%s round=%d", verdict, round_num)
-        # First line = verdict word; rest = review summary for PR review body
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         summary = lines[1] if len(lines) > 1 else f"Reviewer verdict: {verdict}."
         if len(lines) > 2:
             summary = " ".join(lines[1:])[:2000]
+        emit_event("worker.verdict", _tid, {"verdict": verdict, "summary": _trunc(summary)})
         return {**state, "reviewer_verdict": verdict, "reviewer_summary": summary, "review_round": round_num}
 
     def route_after_review(state: TaskState) -> Literal["implementer", "end"]:
@@ -338,9 +358,10 @@ def run_task(
     if db_path.exists():
         db_path.unlink()
         logger.info("Cleared stale checkpoint DB for thread %s", thread_id)
+    _run_ticket_id = thread_id.removeprefix("ticket-") if thread_id.startswith("ticket-") else None
     logger.info("run_task: building graph for thread=%s workspace=%s", thread_id, workspace_path)
     with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
-        graph = build_graph(workspace_path, checkpointer=checkpointer)
+        graph = build_graph(workspace_path, checkpointer=checkpointer, ticket_id=_run_ticket_id)
 
         initial: TaskState = {
             "task_spec": task_spec,

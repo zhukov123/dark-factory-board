@@ -123,6 +123,14 @@ export class TaskBoardApiClient {
     this.onUnauthorized = options.onUnauthorized
   }
 
+  getAuthToken(): string {
+    return this.token
+  }
+
+  getApiBaseUrl(): string {
+    return this.baseUrl
+  }
+
   async getTickets(filters: TicketFilters): Promise<TicketsPage> {
     const params = new URLSearchParams()
     if (filters.status) params.set('status', filters.status)
