@@ -15,10 +15,14 @@ from activities import (
     workspace_has_code,
     run_task_tests,
     open_or_update_pr,
+    review_pr,
+    post_pr_comment,
+    merge_pr,
     wait_for_review_and_ci,
     patch_run_workflow_id,
     transition_ticket,
     close_task,
+    cleanup_workspace,
 )
 
 
@@ -52,10 +56,14 @@ async def main() -> None:
             workspace_has_code,
             run_task_tests,
             open_or_update_pr,
+            review_pr,
+            post_pr_comment,
+            merge_pr,
             wait_for_review_and_ci,
             patch_run_workflow_id,
             transition_ticket,
             close_task,
+            cleanup_workspace,
         ],
     )
     logger.info("Worker started on task queue %s", TEMPORAL_TASK_QUEUE)

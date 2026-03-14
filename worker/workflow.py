@@ -26,9 +26,12 @@ class DarkFactoryRun:
         ttl_seconds: int = 1800,
         sleep_seconds_when_no_task: int = 300,
         max_idle_seconds: int | None = None,
-        skip_pr: bool = False,
+        skip_human_approval: bool = True,
     ) -> None:
-        workflow.logger.info("DarkFactoryRun started", extra={"owner": owner, "repo": repo, "skip_pr": skip_pr})
+        workflow.logger.info(
+            "DarkFactoryRun started",
+            extra={"owner": owner, "repo": repo, "skip_human_approval": skip_human_approval},
+        )
         idle_start: float | None = None
 
         while True:
@@ -77,48 +80,12 @@ class DarkFactoryRun:
             branch = prep.get("branch", "")
             effective_repo = prep.get("repo") or ticket_repo
 
-            # 4. Execute (LangGraph); handle approval interrupt (skip when skip_pr)
-            exec_result = await workflow.execute_activity(
+            # 4. Execute (LangGraph: Planner -> Implementer only; review happens in review_pr after PR is created)
+            await workflow.execute_activity(
                 "execute_task_with_lang_graph",
-                args=[ticket_id, task_spec, workspace_path, branch],
+                args=[ticket_id, task_spec, workspace_path, branch, None],
                 start_to_close_timeout=timedelta(hours=1),
             )
-            if not skip_pr:
-                while exec_result.get("needs_approval") and exec_result.get("decision_id"):
-                    decision_id = exec_result["decision_id"]
-                    workflow_id = workflow.info().workflow_id
-                    await workflow.execute_activity(
-                        "patch_run_workflow_id",
-                        args=[ticket_id, workflow_id],
-                        start_to_close_timeout=timedelta(seconds=30),
-                    )
-                    self._approval_result = None
-                    _wait = getattr(workflow, "wait_condition", None) or workflow.await_condition
-                    await _wait(lambda: self._approval_result is not None)
-                    if self._approval_result == "rejected":
-                        await workflow.execute_activity(
-                            "transition_ticket",
-                            args=[ticket_id, "Blocked", "Rejected by human", "worker"],
-                            start_to_close_timeout=timedelta(seconds=30),
-                        )
-                        await workflow.execute_activity(
-                            "close_task",
-                            args=[ticket_id, owner],
-                            start_to_close_timeout=timedelta(seconds=30),
-                        )
-                        break
-                    exec_result = await workflow.execute_activity(
-                        "execute_task_with_lang_graph",
-                        args=[ticket_id, task_spec, workspace_path, branch, decision_id],
-                        start_to_close_timeout=timedelta(hours=1),
-                    )
-                if self._approval_result == "rejected":
-                    continue
-            elif exec_result.get("needs_approval"):
-                workflow.logger.info("Execute reported risky; auto-approving (skip_pr)", extra={"ticket_id": ticket_id})
-
-            if not exec_result.get("success"):
-                workflow.logger.info("Execute reported fail; running tests and closing (skip_pr)", extra={"ticket_id": ticket_id})
 
             # 5. Run tests
             await workflow.execute_activity(
@@ -127,49 +94,63 @@ class DarkFactoryRun:
                 start_to_close_timeout=timedelta(minutes=10),
             )
 
-            # 6 & 7. PR and wait (skipped when skip_pr=True — local-only, changes stay in workspace)
-            if skip_pr:
-                merged = True
-            else:
-                pr_result = await workflow.execute_activity(
-                    "open_or_update_pr",
-                    args=[ticket_id, workspace_path, branch, effective_repo],
-                    start_to_close_timeout=timedelta(minutes=5),
-                )
-                pr_number = pr_result.get("pr_number", 0)
+            # 6. Create PR (Implementer handoff)
+            pr_result = await workflow.execute_activity(
+                "open_or_update_pr",
+                args=[ticket_id, workspace_path, branch, effective_repo, 0],
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+            pr_number = pr_result.get("pr_number", 0)
+            cleaned_up = False
 
+            if pr_number <= 0:
+                workflow.logger.info("PR creation failed; leaving ticket In Progress", extra={"ticket_id": ticket_id})
+                await workflow.execute_activity(
+                    "transition_ticket",
+                    args=[ticket_id, "InProgress", "PR creation failed", "worker"],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                await workflow.execute_activity(
+                    "close_task",
+                    args=[ticket_id, owner, "InProgress"],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
                 merged = False
-                while True:
-                    outcome = await workflow.execute_activity(
-                        "wait_for_review_and_ci",
-                        args=[ticket_id, pr_number, effective_repo],
-                        start_to_close_timeout=timedelta(hours=1),
+            else:
+                merged = False
+                max_review_rounds = 5
+                for round_one in range(max_review_rounds):
+                    review_round = round_one + 1
+                    review_result = await workflow.execute_activity(
+                        "review_pr",
+                        args=[ticket_id, pr_number, effective_repo, workspace_path, skip_human_approval, review_round],
+                        start_to_close_timeout=timedelta(minutes=10),
                     )
-                    if outcome == "merged":
+                    verdict = (review_result.get("verdict") or "pass").strip().lower()
+                    body = (review_result.get("body") or "").strip()
+
+                    if verdict == "pass":
                         merged = True
                         break
-                    if outcome == "rejected":
-                        workflow.logger.info("PR rejected", extra={"ticket_id": ticket_id})
-                        await workflow.execute_activity(
-                            "transition_ticket",
-                            args=[ticket_id, "Blocked", "PR rejected", "worker"],
-                            start_to_close_timeout=timedelta(seconds=30),
-                        )
-                        await workflow.execute_activity(
-                            "close_task",
-                            args=[ticket_id, owner],
-                            start_to_close_timeout=timedelta(seconds=30),
-                        )
-                        break
-                    if outcome == "changes_requested":
+                    if verdict == "fail" or (verdict == "risky" and skip_human_approval):
                         await workflow.execute_activity(
                             "transition_ticket",
                             args=[ticket_id, "InProgress", "Re-addressing review", "worker"],
                             start_to_close_timeout=timedelta(seconds=30),
                         )
                         await workflow.execute_activity(
+                            "post_pr_comment",
+                            args=[
+                                ticket_id,
+                                pr_number,
+                                effective_repo,
+                                "**Implementer** is addressing the review feedback above. Pushing updates and requesting another review.",
+                            ],
+                            start_to_close_timeout=timedelta(seconds=15),
+                        )
+                        await workflow.execute_activity(
                             "execute_task_with_lang_graph",
-                            args=[ticket_id, task_spec, workspace_path, branch],
+                            args=[ticket_id, task_spec, workspace_path, branch, body],
                             start_to_close_timeout=timedelta(hours=1),
                         )
                         await workflow.execute_activity(
@@ -179,13 +160,60 @@ class DarkFactoryRun:
                         )
                         pr_result = await workflow.execute_activity(
                             "open_or_update_pr",
-                            args=[ticket_id, workspace_path, branch, effective_repo],
+                            args=[ticket_id, workspace_path, branch, effective_repo, pr_number],
                             start_to_close_timeout=timedelta(minutes=5),
                         )
                         pr_number = pr_result.get("pr_number", pr_number)
+                        if pr_number <= 0:
+                            break
                         continue
+                    if verdict == "risky" and not skip_human_approval:
+                        decision_id = review_result.get("decision_id")
+                        if decision_id:
+                            workflow_id = workflow.info().workflow_id
+                            await workflow.execute_activity(
+                                "patch_run_workflow_id",
+                                args=[ticket_id, workflow_id],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            self._approval_result = None
+                            _wait = getattr(workflow, "wait_condition", None) or workflow.await_condition
+                            await _wait(lambda: self._approval_result is not None)
+                            if self._approval_result == "rejected":
+                                await workflow.execute_activity(
+                                    "transition_ticket",
+                                    args=[ticket_id, "Blocked", "Rejected by human", "worker"],
+                                    start_to_close_timeout=timedelta(seconds=30),
+                                )
+                                await workflow.execute_activity(
+                                    "close_task",
+                                    args=[ticket_id, owner, "Blocked"],
+                                    start_to_close_timeout=timedelta(seconds=30),
+                                )
+                                await workflow.execute_activity(
+                                    "cleanup_workspace",
+                                    args=[workspace_path],
+                                    start_to_close_timeout=timedelta(seconds=60),
+                                )
+                                cleaned_up = True
+                                merged = False
+                                break
+                            await workflow.execute_activity(
+                                "merge_pr",
+                                args=[ticket_id, pr_number, effective_repo],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            merged = True
+                        break
+                if not merged and not review_result.get("needs_approval"):
+                    workflow.logger.info("Review rounds exhausted; leaving ticket In Progress", extra={"ticket_id": ticket_id})
+                    await workflow.execute_activity(
+                        "close_task",
+                        args=[ticket_id, owner, "InProgress"],
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
 
-            # 8. Close task (when merged or skip_pr)
+            # 8. Close task (only when PR merged; PR-failed leaves ticket In Progress)
             if merged:
                 await workflow.execute_activity(
                     "close_task",
@@ -193,3 +221,11 @@ class DarkFactoryRun:
                     start_to_close_timeout=timedelta(seconds=30),
                 )
                 workflow.logger.info("Task closed", extra={"ticket_id": ticket_id})
+
+            # 9. Cleanup workspace (skip if already cleaned e.g. on human reject)
+            if not cleaned_up:
+                await workflow.execute_activity(
+                    "cleanup_workspace",
+                    args=[workspace_path],
+                    start_to_close_timeout=timedelta(seconds=60),
+                )

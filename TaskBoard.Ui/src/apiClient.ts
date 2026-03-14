@@ -21,6 +21,8 @@ interface RawRunDto {
   last_ci_state: string
   last_summary: string | null
   last_error: string | null
+  pending_approval_decision_id: string | null
+  workflow_id: string | null
   updated_at: string
 }
 
@@ -250,6 +252,12 @@ export class TaskBoardApiClient {
     return data.map(mapEvent)
   }
 
+  /** Fetch recent events (all tickets) for the global activity monitor backlog. */
+  async getRecentEvents(limit = 200): Promise<EventDto[]> {
+    const data = await this.request<RawEventDto[]>(`/events?limit=${limit}`)
+    return data.map(mapEvent)
+  }
+
   async postTicketUpdate(ticketId: string, message: string, author?: string): Promise<EventDto> {
     const data = await this.request<RawEventDto>(`/tickets/${ticketId}/updates`, {
       method: 'POST',
@@ -263,6 +271,22 @@ export class TaskBoardApiClient {
     return this.request<{ released: boolean }>('/runs/release', {
       method: 'POST',
       body: JSON.stringify({ ticket_id: ticketId, owner }),
+    })
+  }
+
+  /** Approve a run that is awaiting approval (reviewer said "risky"). Signals the workflow to continue. */
+  async approveRun(ticketId: string, decisionId: string, note?: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/runs/${ticketId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ decision_id: decisionId, note: note ?? '' }),
+    })
+  }
+
+  /** Reject a run that is awaiting approval. Signals the workflow to release and leave ticket Blocked. */
+  async rejectRun(ticketId: string, decisionId: string, note?: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/runs/${ticketId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ decision_id: decisionId, note: note ?? '' }),
     })
   }
 
@@ -316,6 +340,8 @@ function mapRun(run: RawRunDto): NonNullable<TicketDto['run']> {
     lastCiState: run.last_ci_state,
     lastSummary: run.last_summary,
     lastError: run.last_error,
+    pendingApprovalDecisionId: run.pending_approval_decision_id ?? null,
+    workflowId: run.workflow_id ?? null,
     updatedAt: run.updated_at,
   }
 }

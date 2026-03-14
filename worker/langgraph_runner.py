@@ -1,4 +1,4 @@
-"""LangGraph task execution: Planner -> Implementer -> Reviewer with optional interrupt."""
+"""LangGraph task execution: Planner -> Implementer. PR review runs in review_pr activity (after PR is created)."""
 import json
 import logging
 import re
@@ -21,7 +21,7 @@ from config import (
     LMSTUDIO_BASE_URL,
     LMSTUDIO_MODEL,
 )
-from taskboard_client import emit_event, _trunc
+from taskboard_client import emit_event, _trunc, _trunc_long
 
 
 def _llm_log_dir() -> Path:
@@ -116,12 +116,7 @@ class TaskState(TypedDict):
     checklist: list[str]
     current_file_edits: list[str]
     implementer_summary: str
-    reviewer_feedback: str
-    interrupt_decision_id: str | None
-    task_result: dict | None
-    reviewer_verdict: Literal["pass", "fail", "risky"] | None
-    reviewer_summary: str
-    review_round: int
+    reviewer_summary: str  # PR review feedback when re-running after fail/risky
 
 
 def _tools(workspace_path: str):
@@ -198,7 +193,11 @@ def _get_llm():
     return None
 
 
-def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None, ticket_id: str | None = None):
+def build_graph(
+    workspace_path: str,
+    checkpointer: SqliteSaver | None = None,
+    ticket_id: str | None = None,
+):
     llm = _get_llm()
     if llm is None:
         raise ValueError("No LLM configured. Set OPENROUTER_API_KEY or LMSTUDIO_BASE_URL.")
@@ -229,9 +228,13 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None, ti
 
     def implementer(state: TaskState, config: dict | None = None) -> TaskState:
         emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "starting implementation"})
+        human_content = f"Checklist:\n" + "\n".join(state["checklist"]) + "\n\nTask spec:\n" + state["task_spec"]
+        reviewer_summary = (state.get("reviewer_summary") or "").strip()
+        if reviewer_summary:
+            human_content += f"\n\nReviewer feedback (address these issues):\n{reviewer_summary}"
         messages: list = [
             SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for tests. After seeing tool results, call more tools as needed until the checklist is done; then reply with a short summary and no further tool calls."),
-            HumanMessage(content=f"Checklist:\n" + "\n".join(state["checklist"]) + "\n\nTask spec:\n" + state["task_spec"]),
+            HumanMessage(content=human_content),
         ]
         conf = config or {}
         run_config = _run_config_with_llm_log(conf, "implementer")
@@ -274,65 +277,24 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None, ti
         emit_event("worker.phase", _tid, {"phase": "implementer", "detail": "done"})
         return {**state, "current_file_edits": edits, "implementer_summary": last_summary}
 
-    def reviewer(state: TaskState, config: dict | None = None) -> TaskState:
-        round_num = state.get("review_round", 0) + 1
-        emit_event("worker.phase", _tid, {"phase": "reviewer", "detail": f"round {round_num}"})
-        edited_files = state.get("current_file_edits") or []
-        files_edited = ", ".join(edited_files)
-        implementer_summary = (state.get("implementer_summary") or "").strip()
-        review_content = (
-            f"Task spec:\n{state['task_spec']}\n\nChecklist:\n" + "\n".join(state["checklist"])
-            + f"\n\nFiles edited: {files_edited}"
-        )
-        if implementer_summary:
-            review_content += f"\n\nImplementer summary (what was done):\n{implementer_summary}"
-        ws = Path(workspace_path)
-        for rel in edited_files[:10]:
-            fp = ws / rel.lstrip("/")
-            if fp.exists():
-                content = fp.read_text(errors="replace")
-                if len(content) > 4000:
-                    content = content[:2000] + "\n...(truncated)...\n" + content[-2000:]
-                review_content += f"\n\n--- {rel} ---\n```\n{content}\n```"
-        logger.info("REVIEWER round %d: %d files, summary_len=%d", round_num, len(edited_files), len(implementer_summary))
-        messages = [
-            SystemMessage(content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the actual file contents provided below to judge whether the checklist was completed correctly."),
-            HumanMessage(content=review_content),
-        ]
-        conf = config or {}
-        run_config = _run_config_with_llm_log(conf, "reviewer")
-        out = llm.invoke(messages, config=run_config)
-        raw = _strip_thinking(out.content if hasattr(out, "content") else str(out))
-        content = raw.lower()
-        verdict = "pass"
-        if "risky" in content:
-            verdict = "risky"
-        elif "fail" in content:
-            verdict = "fail"
-        if verdict == "fail" and round_num >= 2:
-            logger.info("REVIEWER: round %d fail -> auto-pass", round_num)
-            verdict = "pass"
-        logger.info("REVIEWER: verdict=%s round=%d", verdict, round_num)
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        summary = lines[1] if len(lines) > 1 else f"Reviewer verdict: {verdict}."
-        if len(lines) > 2:
-            summary = " ".join(lines[1:])[:2000]
-        emit_event("worker.verdict", _tid, {"verdict": verdict, "summary": _trunc(summary)})
-        return {**state, "reviewer_verdict": verdict, "reviewer_summary": summary, "review_round": round_num}
+    def _entry_passthrough(state: TaskState) -> TaskState:
+        """Passthrough so we can route from entry to planner or implementer."""
+        return state
 
-    def route_after_review(state: TaskState) -> Literal["implementer", "end"]:
-        if state.get("reviewer_verdict") == "fail" and state.get("review_round", 0) < 2:
+    def route_start(state: TaskState) -> Literal["planner", "implementer"]:
+        """When re-running with reviewer feedback, skip planner and go straight to implementer (use existing checklist)."""
+        if (state.get("reviewer_summary") or "").strip():
             return "implementer"
-        return "end"
+        return "planner"
 
     graph_builder = StateGraph(TaskState)
+    graph_builder.add_node("_start", _entry_passthrough)
     graph_builder.add_node("planner", planner)
     graph_builder.add_node("implementer", implementer)
-    graph_builder.add_node("reviewer", reviewer)
-    graph_builder.set_entry_point("planner")
+    graph_builder.set_entry_point("_start")
+    graph_builder.add_conditional_edges("_start", route_start, {"planner": "planner", "implementer": "implementer"})
     graph_builder.add_edge("planner", "implementer")
-    graph_builder.add_edge("implementer", "reviewer")
-    graph_builder.add_conditional_edges("reviewer", route_after_review, {"implementer": "implementer", "end": END})
+    graph_builder.add_edge("implementer", END)
 
     graph = graph_builder.compile(checkpointer=checkpointer)
     return graph
@@ -342,17 +304,22 @@ def run_task(
     task_spec: str,
     workspace_path: str,
     thread_id: str = "default",
-    interrupt_decision_id: str | None = None,
-) -> tuple[dict, bool, str | None]:
+    reviewer_feedback: str | None = None,
+) -> tuple[dict, bool]:
     """
-    Run the LangGraph. Returns (task_result, success, decision_id_if_interrupt).
-    task_result has keys: assumptions, files_changed, tests_run, pass/fail.
+    Run the LangGraph (Planner -> Implementer). Returns (task_result, success).
+    task_result has task_spec, checklist, implementer_summary, files_changed for use by review_pr activity.
     If neither OPENROUTER_API_KEY nor LMSTUDIO_BASE_URL is set, returns a no-op success (no LLM calls).
     """
     if not OPENROUTER_API_KEY and not LMSTUDIO_BASE_URL:
-        task_result = {"assumptions": [], "files_changed": [], "tests_run": [], "pass": True}
+        task_result = {
+            "task_spec": task_spec,
+            "checklist": [],
+            "implementer_summary": "",
+            "files_changed": [],
+        }
         (Path(workspace_path) / "task_result.json").write_text(json.dumps(task_result, indent=2))
-        return task_result, True, None
+        return task_result, True
 
     db_path = Path(workspace_path) / ".langgraph_checkpoints.sqlite"
     if db_path.exists():
@@ -360,21 +327,35 @@ def run_task(
         logger.info("Cleared stale checkpoint DB for thread %s", thread_id)
     _run_ticket_id = thread_id.removeprefix("ticket-") if thread_id.startswith("ticket-") else None
     logger.info("run_task: building graph for thread=%s workspace=%s", thread_id, workspace_path)
+
+    # When re-running with reviewer feedback, load existing checklist from last run so we skip planner and implementer uses same plan.
+    checklist_from_file: list[str] = []
+    implementer_summary_from_file = ""
+    if reviewer_feedback:
+        result_path = Path(workspace_path) / "task_result.json"
+        if result_path.exists():
+            try:
+                prev = json.loads(result_path.read_text())
+                checklist_from_file = prev.get("checklist") or []
+                implementer_summary_from_file = (prev.get("implementer_summary") or "").strip()
+                logger.info("run_task: re-run with feedback, using existing checklist (%d items)", len(checklist_from_file))
+            except Exception as e:
+                logger.warning("run_task: could not load task_result.json for re-run: %s", e)
+
     with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
-        graph = build_graph(workspace_path, checkpointer=checkpointer, ticket_id=_run_ticket_id)
+        graph = build_graph(
+            workspace_path,
+            checkpointer=checkpointer,
+            ticket_id=_run_ticket_id,
+        )
 
         initial: TaskState = {
             "task_spec": task_spec,
             "workspace_path": workspace_path,
-            "checklist": [],
+            "checklist": checklist_from_file,
             "current_file_edits": [],
-            "implementer_summary": "",
-            "reviewer_feedback": "",
-            "interrupt_decision_id": interrupt_decision_id,
-            "task_result": None,
-            "reviewer_verdict": None,
-            "reviewer_summary": "",
-            "review_round": 0,
+            "implementer_summary": implementer_summary_from_file,
+            "reviewer_summary": (reviewer_feedback or "").strip(),
         }
 
         log_dir = _llm_log_dir()
@@ -384,35 +365,78 @@ def run_task(
                 "llm_log_dir": str(log_dir),
             }
         }
-        logger.info("run_task: invoking graph (resume=%s)...", bool(interrupt_decision_id))
+        logger.info("run_task: invoking graph (feedback=%s)...", bool(reviewer_feedback))
         import time as _time
         t0 = _time.monotonic()
-        if interrupt_decision_id:
-            result = graph.invoke(None, config=config)
-        else:
-            result = graph.invoke(initial, config=config)
+        result = graph.invoke(initial, config=config)
         elapsed = _time.monotonic() - t0
         logger.info("run_task: graph completed in %.1fs", elapsed)
 
     state = result if isinstance(result, dict) else {}
-    verdict = state.get("reviewer_verdict")
     checklist = state.get("checklist", [])
     edits = state.get("current_file_edits", [])
+    implementer_summary = (state.get("implementer_summary") or "").strip()
 
-    reviewer_summary = (state.get("reviewer_summary") or "").strip() or f"Reviewer verdict: {verdict}."
     task_result = {
-        "assumptions": [],
+        "task_spec": task_spec,
+        "checklist": checklist,
+        "implementer_summary": implementer_summary,
         "files_changed": edits,
-        "tests_run": [],
-        "pass": verdict == "pass",
-        "reviewer_verdict": verdict,
-        "review_summary": reviewer_summary,
     }
     result_path = Path(workspace_path) / "task_result.json"
     result_path.write_text(json.dumps(task_result, indent=2))
 
-    if verdict == "risky":
-        import uuid
-        decision_id = str(uuid.uuid4())
-        return task_result, False, decision_id
-    return task_result, verdict == "pass", None
+    return task_result, True
+
+
+def review_pr_content(
+    task_spec: str,
+    checklist: list[str],
+    pr_body: str,
+    pr_diff: str,
+    implementer_summary: str = "",
+    ticket_id: str | None = None,
+) -> tuple[str, str]:
+    """
+    Run the Reviewer LLM on PR content (body + diff). Returns (verdict, summary).
+    verdict is one of pass, fail, risky. Used by review_pr activity.
+    """
+    llm = _get_llm()
+    if llm is None:
+        return "pass", "No LLM configured; defaulting to pass."
+    review_content = (
+        f"Task spec:\n{task_spec}\n\nChecklist:\n" + "\n".join(checklist)
+        + f"\n\nPR description:\n{pr_body or '(none)'}"
+    )
+    if implementer_summary:
+        review_content += f"\n\nImplementer summary (what was done):\n{implementer_summary}"
+    if pr_diff:
+        if len(pr_diff) > 12000:
+            pr_diff = pr_diff[:6000] + "\n...(truncated)...\n" + pr_diff[-6000:]
+        review_content += f"\n\n--- PR diff ---\n```\n{pr_diff}\n```"
+    messages = [
+        SystemMessage(
+            content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the PR description and diff provided below to judge whether the checklist was completed correctly."
+        ),
+        HumanMessage(content=review_content),
+    ]
+    config = {}
+    if ticket_id:
+        log_dir = _llm_log_dir()
+        config = {"configurable": {"thread_id": f"ticket-{ticket_id}", "llm_log_dir": str(log_dir)}}
+    run_config = _run_config_with_llm_log(config, "reviewer")
+    out = llm.invoke(messages, config=run_config)
+    raw = _strip_thinking(out.content if hasattr(out, "content") else str(out))
+    content = raw.lower()
+    verdict = "pass"
+    if "risky" in content:
+        verdict = "risky"
+    elif "fail" in content:
+        verdict = "fail"
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    summary = lines[1] if len(lines) > 1 else f"Reviewer verdict: {verdict}."
+    if len(lines) > 2:
+        summary = " ".join(lines[1:])[:2000]
+    if ticket_id:
+        emit_event("worker.verdict", ticket_id, {"verdict": verdict, "summary": _trunc_long(summary)})
+    return verdict, summary

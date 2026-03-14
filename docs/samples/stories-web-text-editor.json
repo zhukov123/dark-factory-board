@@ -19,6 +19,7 @@
   },
   {
     "title": "T-ED-2: Core Editor Component with Tiptap",
+    "depends_on": ["T-ED-1"],
     "status": "Backlog",
     "priority": 1,
     "repo": "web-text-editor",
@@ -38,6 +39,7 @@
   },
   {
     "title": "T-ED-3: Rich Text Formatting Toolbar",
+    "depends_on": ["T-ED-2"],
     "status": "Backlog",
     "priority": 2,
     "repo": "web-text-editor",
@@ -62,6 +64,7 @@
   },
   {
     "title": "T-ED-4: Markdown Serialization (Import/Export)",
+    "depends_on": ["T-ED-2"],
     "status": "Backlog",
     "priority": 2,
     "repo": "web-text-editor",
@@ -80,6 +83,7 @@
   },
   {
     "title": "T-ED-5: File Operations (New / Open / Save / Save As)",
+    "depends_on": ["T-ED-4"],
     "status": "Backlog",
     "priority": 3,
     "repo": "web-text-editor",
@@ -101,6 +105,7 @@
   },
   {
     "title": "T-ED-6: Keyboard Shortcuts",
+    "depends_on": ["T-ED-3"],
     "status": "Backlog",
     "priority": 3,
     "repo": "web-text-editor",
@@ -125,6 +130,7 @@
   },
   {
     "title": "T-ED-7: Multi-Tab Document Management",
+    "depends_on": ["T-ED-5"],
     "status": "Backlog",
     "priority": 4,
     "repo": "web-text-editor",
@@ -148,6 +154,7 @@
   },
   {
     "title": "T-ED-8: Search and Replace",
+    "depends_on": ["T-ED-2"],
     "status": "Backlog",
     "priority": 4,
     "repo": "web-text-editor",
@@ -172,6 +179,7 @@
   },
   {
     "title": "T-ED-9: Code Block Syntax Highlighting",
+    "depends_on": ["T-ED-2"],
     "status": "Backlog",
     "priority": 4,
     "repo": "web-text-editor",
@@ -193,6 +201,7 @@
   },
   {
     "title": "T-ED-10: Auto-Save & IndexedDB Persistence",
+    "depends_on": ["T-ED-7"],
     "status": "Backlog",
     "priority": 5,
     "repo": "web-text-editor",

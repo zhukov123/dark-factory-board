@@ -21,6 +21,8 @@ export interface RunDto {
   lastCiState: string
   lastSummary: string | null
   lastError: string | null
+  pendingApprovalDecisionId: string | null
+  workflowId: string | null
   updatedAt: string
 }
 

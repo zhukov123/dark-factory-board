@@ -106,6 +106,30 @@ export function TicketModal({
     onError: (error) => onError(formatError(error)),
   })
 
+  const approveRunMutation = useMutation({
+    mutationFn: (payload: { decisionId: string; note?: string }) =>
+      client.approveRun(ticket.id, payload.decisionId, payload.note),
+    onSuccess: () => {
+      onError('')
+      void invalidateBoard(queryClient)
+      void queryClient.invalidateQueries({ queryKey: ['events', ticket.id] })
+      void queryClient.invalidateQueries({ queryKey: ['tickets', ticket.id] })
+    },
+    onError: (error) => onError(formatError(error)),
+  })
+
+  const rejectRunMutation = useMutation({
+    mutationFn: (payload: { decisionId: string; note?: string }) =>
+      client.rejectRun(ticket.id, payload.decisionId, payload.note),
+    onSuccess: () => {
+      onError('')
+      void invalidateBoard(queryClient)
+      void queryClient.invalidateQueries({ queryKey: ['events', ticket.id] })
+      void queryClient.invalidateQueries({ queryKey: ['tickets', ticket.id] })
+    },
+    onError: (error) => onError(formatError(error)),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: () => client.deleteTicket(ticket.id),
     onSuccess: onDeleted,
@@ -396,8 +420,45 @@ export function TicketModal({
                         <dd className="run-error">{ticket.run.lastError}</dd>
                       </>
                     )}
-                  </dl>
-                  {ticket.status === 'InProgress' && ticket.run != null && (
+                    </dl>
+                  {ticket.run != null &&
+                    ticket.run.phase?.toLowerCase() === 'awaitingapproval' &&
+                    ticket.run.pendingApprovalDecisionId &&
+                    ticket.run.workflowId && (
+                    <div className="run-actions run-approval-actions">
+                      <p className="run-approval-heading">Reviewer marked this run as risky. Decide whether to continue.</p>
+                      <div className="run-approval-buttons">
+                        <button
+                          type="button"
+                          className="run-approve-btn"
+                          disabled={approveRunMutation.isPending || rejectRunMutation.isPending}
+                          onClick={() =>
+                            approveRunMutation.mutate({
+                              decisionId: ticket.run!.pendingApprovalDecisionId!,
+                            })
+                          }
+                        >
+                          {approveRunMutation.isPending ? 'Sending…' : 'Approve'}
+                        </button>
+                        <button
+                          type="button"
+                          className="run-reject-btn"
+                          disabled={approveRunMutation.isPending || rejectRunMutation.isPending}
+                          onClick={() =>
+                            rejectRunMutation.mutate({
+                              decisionId: ticket.run!.pendingApprovalDecisionId!,
+                            })
+                          }
+                        >
+                          {rejectRunMutation.isPending ? 'Sending…' : 'Reject'}
+                        </button>
+                      </div>
+                      <span className="run-action-hint">
+                        Approve: workflow continues (tests, PR). Reject: run is released, ticket stays Blocked.
+                      </span>
+                    </div>
+                  )}
+                  {ticket.run != null && ticket.run.lockOwner != null && (
                     <div className="run-actions">
                       <button
                         type="button"

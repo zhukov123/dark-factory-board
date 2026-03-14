@@ -2,13 +2,14 @@
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from temporalio import activity
 
 logger = logging.getLogger(__name__)
 
-from config import REPO_CLONE_ROOT, GITHUB_TOKEN, GITEA_URL, GITEA_TOKEN, WORKSPACE_REPO, WORKSPACE_PATH, GITHUB_MERGE_METHOD
+from config import REPO_CLONE_ROOT, GITHUB_TOKEN, GITEA_URL, GITEA_TOKEN, WORKSPACE_REPO, WORKSPACE_PATH, GITHUB_MERGE_METHOD, SKIP_HUMAN_APPROVAL
 from taskboard_client import (
     claim,
     release,
@@ -20,6 +21,26 @@ from taskboard_client import (
     upload_attachment,
     emit_event,
 )
+
+
+def _sanitize_url(url: str) -> str:
+    """Hide token in URLs for logs and events (e.g. http://token@host -> http://***@host)."""
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlparse, urlunparse
+        p = urlparse(url)
+        if p.username or p.password:
+            netloc = p.hostname or ""
+            if p.port:
+                netloc += f":{p.port}"
+            if p.username:
+                netloc = "***@" + netloc
+            p = p._replace(netloc=netloc)
+            return urlunparse(p)
+    except Exception:
+        pass
+    return re.sub(r"://[^@]+@", "://***@", url)
 
 
 def _build_task_spec(ticket: dict) -> str:
@@ -129,28 +150,115 @@ def _repo_slug_from_path(path: Path) -> str | None:
     return None
 
 
+def _check_gitea_repo_and_ensure(repo_slug: str) -> None:
+    """
+    Test Gitea connectivity and repo access; create repo if 404. Raises RuntimeError with a clear
+    message on failure (e.g. 401 Unauthorized, connection refused, create failed) for troubleshooting.
+    """
+    if not repo_slug or "/" not in repo_slug:
+        return
+    parts = repo_slug.split("/", 1)
+    owner, name = parts[0], parts[1]
+    if not GITEA_URL or not GITEA_TOKEN:
+        return
+    import httpx
+    headers = {"Authorization": f"token {GITEA_TOKEN}"}
+    base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
+
+    # 1. Test connectivity and token: GET /api/v1/user
+    try:
+        u = httpx.get(f"{GITEA_URL}/api/v1/user", headers=headers, timeout=10)
+        if u.status_code == 401:
+            raise RuntimeError(
+                f"Gitea: 401 Unauthorized for {GITEA_URL}. Check GITEA_TOKEN is valid and has repo scope."
+            )
+        if u.status_code == 404:
+            raise RuntimeError(
+                f"Gitea: {GITEA_URL}/api/v1/user returned 404 — is GITEA_URL correct (e.g. http://gitea:3000)?"
+            )
+        if not u.is_success:
+            raise RuntimeError(
+                f"Gitea: unexpected response from {GITEA_URL}/api/v1/user: {u.status_code} {u.text[:200]}"
+            )
+    except httpx.ConnectError as e:
+        raise RuntimeError(
+            f"Gitea: cannot connect to {GITEA_URL}. Is Gitea running and reachable from the worker? {e}"
+        ) from e
+    except httpx.TimeoutException as e:
+        raise RuntimeError(
+            f"Gitea: timeout connecting to {GITEA_URL}. Check URL and network. {e}"
+        ) from e
+
+    # 2. Test whether repo exists: GET /api/v1/repos/{owner}/{name}
+    try:
+        r = httpx.get(base_url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            logger.info("Repo %s already exists, using it", repo_slug)
+            return
+        if r.status_code == 401:
+            raise RuntimeError(
+                f"Gitea: 401 Unauthorized accessing repo {repo_slug}. Check GITEA_TOKEN has repo read scope."
+            )
+        if r.status_code == 403:
+            raise RuntimeError(
+                f"Gitea: 403 Forbidden accessing repo {repo_slug}. Token may lack permission."
+            )
+        if r.status_code != 404:
+            raise RuntimeError(
+                f"Gitea: unexpected response for repo {repo_slug}: {r.status_code} {r.text[:200]}"
+            )
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        raise RuntimeError(f"Gitea: failed to check repo {repo_slug}: {e}") from e
+
+    # 3. Repo not found (404) — create it
+    try:
+        current_login = (u.json().get("login") or u.json().get("username") or "").strip()
+    except Exception:
+        current_login = ""
+    create_url = (
+        f"{GITEA_URL}/api/v1/user/repos"
+        if (current_login and owner == current_login)
+        else f"{GITEA_URL}/api/v1/orgs/{owner}/repos"
+    )
+    try:
+        r2 = httpx.post(
+            create_url,
+            headers={**headers, "Content-Type": "application/json"},
+            json={"name": name, "private": True},
+            timeout=15,
+        )
+        if r2.status_code == 201 or r2.is_success:
+            logger.info("Gitea: created repo %s", repo_slug)
+            return
+        if r2.status_code == 401:
+            raise RuntimeError(
+                f"Gitea: 401 Unauthorized creating repo {repo_slug}. Check GITEA_TOKEN."
+            )
+        if r2.status_code == 403:
+            raise RuntimeError(
+                f"Gitea: 403 Forbidden creating repo {repo_slug}. Token may lack create-repo permission or org access."
+            )
+        if r2.status_code == 404 and "orgs/" in create_url:
+            raise RuntimeError(
+                f"Gitea: 404 creating repo {repo_slug}. Org or user '{owner}' may not exist or token cannot create there."
+            )
+        raise RuntimeError(
+            f"Gitea: failed to create repo {repo_slug}: {r2.status_code} {r2.text[:300]}"
+        )
+    except RuntimeError:
+        raise
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        raise RuntimeError(f"Gitea: failed to create repo {repo_slug}: {e}") from e
+
+
 def _ensure_repo_exists(repo_slug: str) -> None:
-    """Ensure the repo exists on the host; create if 404 (GitHub or Gitea)."""
+    """Ensure the repo exists on the host; use existing repo if present, create only if 404 (GitHub or Gitea). Raises on Gitea failure with clear error."""
     if not repo_slug or "/" not in repo_slug:
         return
     parts = repo_slug.split("/", 1)
     owner, name = parts[0], parts[1]
     if GITEA_URL and GITEA_TOKEN:
-        import httpx
-        url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
-        try:
-            r = httpx.get(url, headers={"Authorization": f"token {GITEA_TOKEN}"}, timeout=10)
-            if r.status_code == 404:
-                create_url = f"{GITEA_URL}/api/v1/user/repos"
-                r2 = httpx.post(
-                    create_url,
-                    headers={"Authorization": f"token {GITEA_TOKEN}"},
-                    json={"name": name, "private": True},
-                    timeout=15,
-                )
-                r2.raise_for_status()
-        except Exception as e:
-            logger.warning("Gitea ensure repo failed: %s", e)
+        _check_gitea_repo_and_ensure(repo_slug)
         return
     if GITHUB_TOKEN:
         from github import Github
@@ -183,69 +291,48 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
     short_id = ticket_id[-6:] if len(ticket_id) >= 6 else ticket_id
     branch = f"task/{slug}-{short_id}"
 
-    # Use local workspace path when set (no clone; one task at a time)
-    if WORKSPACE_PATH:
-        workspace_path = Path(WORKSPACE_PATH).resolve()
-        if not workspace_path.is_dir():
-            raise RuntimeError(f"WORKSPACE_PATH is not a directory: {workspace_path}")
-        try:
-            import subprocess
-            ws = str(workspace_path)
-            try:
-                subprocess.run(["git", "fetch", "origin"], cwd=ws, capture_output=True, timeout=30, check=False)
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-            out = subprocess.run(["git", "branch", "--list", "main", "master"], cwd=ws, capture_output=True, text=True, timeout=5)
-            base = "main" if "main" in (out.stdout or "") else ("master" if "master" in (out.stdout or "") else "HEAD")
-            for _ in range(2):
-                r = subprocess.run(["git", "checkout", "-b", branch, base], cwd=ws, capture_output=True, text=True, timeout=10)
-                if r.returncode == 0:
-                    break
-                r2 = subprocess.run(["git", "checkout", branch], cwd=ws, capture_output=True, text=True, timeout=10)
-                if r2.returncode == 0:
-                    break
-                subprocess.run(["git", "checkout", "-b", branch, "HEAD"], cwd=ws, capture_output=True, timeout=10)
-                break
-            meta = {"ticket_id": ticket_id, "branch": branch}
-            meta_path = workspace_path / ".dark-factory.json"
-            meta_path.write_text(json.dumps(meta, indent=2))
-            effective = _repo_slug_from_path(workspace_path)
-            await patch_run(ticket_id, branch=branch, last_error="")
-            await post_update(ticket_id, f"Workspace (local) at {workspace_path}, branch {branch}", author="worker")
-            return {"workspace_path": str(workspace_path), "branch": branch, "repo": effective}
-        except Exception as e:
-            await patch_run(ticket_id, last_error=str(e))
-            raise RuntimeError(f"PrepareWorkspace (WORKSPACE_PATH) failed: {e}") from e
-
-    root = Path(REPO_CLONE_ROOT)
+    # When WORKSPACE_PATH is set, use a per-ticket subdir under it (clean folder per ticket, same as clone path)
+    root = Path(WORKSPACE_PATH).resolve() if WORKSPACE_PATH else Path(REPO_CLONE_ROOT)
+    if root.exists() and not root.is_dir():
+        raise RuntimeError(f"Workspace root is not a directory: {root}")
     root.mkdir(parents=True, exist_ok=True)
     workspace_path = root / f"ticket_{ticket_id.replace('/', '_')}"
     effective = _effective_repo(repo)
     if effective:
         logger.info("Ensuring repo exists: %s", effective)
-        _ensure_repo_exists(effective)
+        try:
+            _ensure_repo_exists(effective)
+        except RuntimeError as e:
+            err = str(e)
+            await patch_run(ticket_id, last_error=err)
+            emit_event("worker.error", ticket_id, {"phase": "prepare_workspace", "message": err})
+            raise RuntimeError(f"PrepareWorkspace (Gitea/repo check): {err}") from e
     repo_url = _repo_url(effective)
-    logger.info("repo_url=%s workspace_path=%s", repo_url, workspace_path)
+    logger.info("repo_url=%s workspace_path=%s", _sanitize_url(repo_url or ""), workspace_path)
+    if effective:
+        emit_event(
+            "worker.debug",
+            ticket_id,
+            {
+                "stage": "prepare_workspace_clone",
+                "clone_url": _sanitize_url(repo_url or ""),
+                "repo_slug": effective,
+                "workspace_path": str(workspace_path),
+                "branch": branch,
+            },
+        )
     if repo_url:
         try:
             import git
+            # Clean new folder per ticket: remove existing dir so we always clone fresh
             if workspace_path.exists():
-                logger.info("Workspace already exists, fetching")
-                g = git.Repo(workspace_path)
-                try:
-                    for r in list(g.remotes):
-                        if getattr(r, "name", None) == "origin":
-                            r.fetch()
-                            break
-                except Exception:
-                    pass
-                base_ref = "HEAD"
-            else:
-                logger.info("Cloning %s -> %s", repo_url, workspace_path)
-                g = git.Repo.clone_from(repo_url, workspace_path)
-                refs = [r.name for r in g.references]
-                logger.info("Clone done, refs=%s", refs)
-                base_ref = "origin/HEAD" if "origin/HEAD" in refs else "origin/main"
+                logger.info("Removing existing workspace %s for fresh clone", workspace_path)
+                shutil.rmtree(workspace_path)
+            logger.info("Cloning %s -> %s", _sanitize_url(repo_url), workspace_path)
+            g = git.Repo.clone_from(repo_url, workspace_path)
+            refs = [r.name for r in g.references]
+            logger.info("Clone done, refs=%s", refs)
+            base_ref = "origin/HEAD" if "origin/HEAD" in refs else "origin/main"
             try:
                 g.git.checkout("-b", branch, base_ref)
             except Exception:
@@ -296,46 +383,49 @@ async def prepare_workspace(ticket_id: str, task_spec: str, repo: str | None = N
 
 @activity.defn
 async def execute_task_with_lang_graph(
-    ticket_id: str, task_spec: str, workspace_path: str, branch: str,
-    resume_decision_id: str | None = None,
+    ticket_id: str,
+    task_spec: str,
+    workspace_path: str,
+    branch: str,
+    reviewer_feedback: str | None = None,
 ) -> dict:
-    """Run LangGraph; on interrupt return needs_approval + decision_id. Write task_result.json and upload."""
+    """Run LangGraph (Planner -> Implementer). Write task_result.json and upload. Review happens in review_pr activity."""
     logger.info("Execute (LangGraph) started for %s", ticket_id)
-    emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": "starting LangGraph"})
+    detail = "re-running with reviewer feedback" if reviewer_feedback else "starting LangGraph"
+    emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": detail})
+    if reviewer_feedback:
+        emit_event(
+            "worker.debug",
+            ticket_id,
+            {
+                "stage": "execute_implementer_input",
+                "message": "Implementer receives the following reviewer feedback (from failed/risky PR review). Full prompt is in logs/llm/.",
+                "reviewer_feedback": reviewer_feedback[:4000] + ("…" if len(reviewer_feedback) > 4000 else ""),
+            },
+        )
     try:
         from langgraph_runner import run_task
     except ImportError:
         return {"success": True}
-    import json
     thread_id = f"ticket-{ticket_id}"
     try:
-        task_result, success, decision_id = run_task(
+        task_result, success = run_task(
             task_spec=task_spec,
             workspace_path=workspace_path,
             thread_id=thread_id,
-            interrupt_decision_id=resume_decision_id,
+            reviewer_feedback=reviewer_feedback,
         )
     except Exception as e:
         err_msg = (str(e) or repr(e))[:2000]
         await patch_run(ticket_id, last_error=err_msg)
         raise
-    if decision_id:
-        await patch_run(
-            ticket_id,
-            phase="AwaitingApproval",
-            pending_approval_decision_id=decision_id,
-        )
-        await transition(ticket_id, "Blocked", note="Awaiting approval", by="worker")
-        return {"success": False, "needs_approval": True, "decision_id": decision_id}
     result_path = Path(workspace_path) / "task_result.json"
     if result_path.exists():
         content = result_path.read_bytes()
         await upload_attachment(ticket_id, "task_result.json", content, "application/json")
     logger.info("Execute (LangGraph) finished for %s success=%s", ticket_id, success)
     emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": f"done — {'success' if success else 'failed'}"})
-    if success:
-        return {"success": True}
-    return {"success": False, "error": "reviewer failed"}
+    return {"success": success}
 
 
 def _find_test_cwd(workspace_path: str) -> Path | None:
@@ -398,39 +488,35 @@ async def run_task_tests(ticket_id: str, workspace_path: str) -> dict:
     return {"success": success, "log_excerpt": excerpt}
 
 
-def _post_review_and_merge_github(pr, body: str) -> None:
-    """Post reviewer-persona review and merge when pass (GitHub)."""
-    try:
-        task_result = json.loads(body) if body else {}
-    except Exception:
-        task_result = {}
-    review_summary = (task_result.get("review_summary") or "").strip() or "Task completed."
-    verdict = (task_result.get("reviewer_verdict") or "pass").strip().lower()
-    event = "APPROVE" if verdict == "pass" else ("REQUEST_CHANGES" if verdict == "fail" else "COMMENT")
-    pr.create_review(event=event, body=review_summary[:4000])
-    if verdict == "pass":
-        try:
-            pr.merge(merge_method=GITHUB_MERGE_METHOD)
-        except Exception as merge_err:
-            logger.warning("PR merge failed (branch protection?): %s", merge_err)
-
-
 @activity.defn
-async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, repo: str | None = None) -> dict:
-    """Push branch, create PR (Gitea or GitHub), post reviewer-persona review, merge when pass, PATCH run (pr_number, pr_url), transition to Review, upload task_result and log."""
+async def open_or_update_pr(
+    ticket_id: str,
+    workspace_path: str,
+    branch: str,
+    repo: str | None = None,
+    existing_pr_number: int = 0,
+) -> dict:
+    """Push branch, create or update PR (Gitea or GitHub). When existing_pr_number>0, only push and return that PR. PATCH run, transition to Review, upload task_result and log. Review is posted by review_pr activity."""
     emit_event("worker.phase", ticket_id, {"phase": "open_pr", "detail": "pushing branch & creating PR"})
     path = Path(workspace_path)
     repo_slug = repo or _repo_slug_from_path(path)
     pr_url = None
     pr_number = 0
     if repo_slug:
-        _ensure_repo_exists(repo_slug)
+        try:
+            _ensure_repo_exists(repo_slug)
+        except RuntimeError as e:
+            err = str(e)
+            await patch_run(ticket_id, last_error=err)
+            emit_event("worker.error", ticket_id, {"phase": "open_pr", "message": err})
+            raise RuntimeError(f"Open PR (Gitea/repo check): {err}") from e
 
     body_path = path / "task_result.json"
     body = body_path.read_text() if body_path.exists() else f"Task {ticket_id}"
 
     if GITEA_URL and GITEA_TOKEN and repo_slug:
         import httpx
+        import subprocess
         import git
         logger.info("open_or_update_pr: pushing branch %s to Gitea %s", branch, repo_slug)
         try:
@@ -442,71 +528,163 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
                 g.git.commit("-m", f"[{ticket_id}] implementation")
             except Exception:
                 pass
+            origin_url = None
             for r in list(g.remotes):
                 if getattr(r, "name", None) == "origin":
-                    r.push(branch)
-                    logger.info("Push succeeded for branch %s", branch)
-                    emit_event("worker.pr", ticket_id, {"action": "pushed", "branch": branch})
+                    origin_url = getattr(r, "url", None) or ""
+                    break
+            origin_sanitized = _sanitize_url(origin_url or "")
+            emit_event(
+                "worker.debug",
+                ticket_id,
+                {
+                    "stage": "open_pr_before_push",
+                    "origin_url": origin_sanitized,
+                    "expected_repo": repo_slug,
+                    "branch": branch,
+                    "gitea_url": _sanitize_url(GITEA_URL) if GITEA_URL else None,
+                },
+            )
+            logger.info("open_or_update_pr: origin=%s expected_repo=%s branch=%s", origin_sanitized, repo_slug, branch)
+            push_stdout = ""
+            push_stderr = ""
+            for r in list(g.remotes):
+                if getattr(r, "name", None) == "origin":
+                    try:
+                        proc = subprocess.run(
+                            ["git", "push", "origin", branch],
+                            cwd=workspace_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                        push_stdout = (proc.stdout or "").strip()[:500]
+                        push_stderr = (proc.stderr or "").strip()[:500]
+                        if proc.returncode != 0:
+                            raise RuntimeError(f"git push failed: {push_stderr or push_stdout or 'no output'}")
+                    except subprocess.TimeoutExpired as e:
+                        raise RuntimeError(f"git push timed out: {e}") from e
+                    logger.info("Push succeeded for branch %s stdout=%r stderr=%r", branch, push_stdout, push_stderr)
+                    emit_event(
+                        "worker.pr",
+                        ticket_id,
+                        {"action": "pushed", "branch": branch, "push_stdout": push_stdout, "push_stderr": push_stderr},
+                    )
                     break
         except Exception as e:
             logger.error("Push failed: %s", e)
             await patch_run(ticket_id, last_error=f"Push failed: {e}")
+            emit_event("worker.error", ticket_id, {"phase": "open_pr", "message": f"Push failed: {e}"})
             return {"pr_url": None, "pr_number": 0}
         owner, name = repo_slug.split("/", 1)
         base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
-        try:
-            r = httpx.get(f"{base_url}", headers={"Authorization": f"token {GITEA_TOKEN}"}, timeout=10)
-            r.raise_for_status()
-            default_branch = r.json().get("default_branch", "main")
-        except Exception as e:
-            await patch_run(ticket_id, last_error=str(e))
-            return {"pr_url": None, "pr_number": 0}
-        try:
-            logger.info("Creating Gitea PR: head=%s base=%s", branch, default_branch)
-            pr_r = httpx.post(
-                f"{base_url}/pulls",
-                headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-                json={"title": f"[{ticket_id}] Task", "body": body[:5000], "head": branch, "base": default_branch},
-                timeout=15,
-            )
-            if pr_r.status_code >= 400:
-                logger.error("Gitea PR creation failed %d: %s", pr_r.status_code, pr_r.text[:500])
-            pr_r.raise_for_status()
-            pr_j = pr_r.json()
-            pr_number = pr_j.get("number") or pr_j.get("index") or 0
-            pr_url = pr_j.get("html_url") or f"{GITEA_URL}/{owner}/{name}/pulls/{pr_number}"
-            emit_event("worker.pr", ticket_id, {"action": "created", "pr_number": pr_number, "url": pr_url})
-            # Post review
+        # Verify branch exists on Gitea before creating PR (404 on POST /pulls often means head branch missing)
+        if existing_pr_number == 0:
             try:
-                task_result = json.loads(body) if body else {}
-            except Exception:
-                task_result = {}
-            review_summary = (task_result.get("review_summary") or "").strip() or "Task completed."
-            verdict = (task_result.get("reviewer_verdict") or "pass").strip().lower()
-            event = "APPROVE" if verdict == "pass" else ("REQUEST_CHANGES" if verdict == "fail" else "COMMENT")
-            httpx.post(
-                f"{base_url}/pulls/{pr_number}/reviews",
-                headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-                json={"event": event, "body": review_summary[:4000]},
-                timeout=10,
-            )
-            if verdict == "pass":
-                try:
-                    merge_r = httpx.post(
-                        f"{base_url}/pulls/{pr_number}/merge",
-                        headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-                        json={"Do": "merge"},
-                        timeout=15,
+                br = httpx.get(
+                    f"{base_url}/branches/{branch}",
+                    headers={"Authorization": f"token {GITEA_TOKEN}"},
+                    timeout=10,
+                )
+                if br.status_code == 404:
+                    existing_branches = []
+                    try:
+                        list_br = httpx.get(
+                            f"{base_url}/branches",
+                            headers={"Authorization": f"token {GITEA_TOKEN}"},
+                            timeout=10,
+                        )
+                        if list_br.status_code == 200 and isinstance(list_br.json(), list):
+                            existing_branches = [b.get("name", "") for b in list_br.json()[:20] if isinstance(b, dict)]
+                    except Exception:
+                        pass
+                    err = (
+                        f"Branch '{branch}' not found on Gitea after push. "
+                        "Push may have failed, or origin remote may not point to this repo. "
+                        f"Check that origin URL is for {repo_slug} and GITEA_TOKEN has push permission."
                     )
-                    merge_r.raise_for_status()
-                    logger.info("Gitea PR #%d merged successfully", pr_number)
-                    emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "url": pr_url, "merged": True})
-                except Exception as merge_err:
-                    logger.warning("Gitea PR merge failed: %s", merge_err)
-                    emit_event("worker.pr", ticket_id, {"action": "merge_failed", "pr_number": pr_number, "url": pr_url})
-        except Exception as e:
-            await patch_run(ticket_id, last_error=str(e))
-            return {"pr_url": None, "pr_number": 0}
+                    await patch_run(ticket_id, last_error=err)
+                    emit_event(
+                        "worker.error",
+                        ticket_id,
+                        {
+                            "phase": "open_pr",
+                            "message": err,
+                            "expected_branch": branch,
+                            "expected_repo": repo_slug,
+                            "existing_branches_on_gitea": existing_branches,
+                        },
+                    )
+                    return {"pr_url": None, "pr_number": 0}
+                if not br.is_success:
+                    err = f"Gitea branches check failed: {br.status_code} {br.text[:200]}"
+                    await patch_run(ticket_id, last_error=err)
+                    emit_event("worker.error", ticket_id, {"phase": "open_pr", "message": err})
+                    return {"pr_url": None, "pr_number": 0}
+            except Exception as e:
+                if isinstance(e, RuntimeError):
+                    raise
+                logger.warning("Could not verify branch on Gitea: %s", e)
+        if existing_pr_number > 0:
+            try:
+                r = httpx.get(f"{base_url}/pulls/{existing_pr_number}", headers={"Authorization": f"token {GITEA_TOKEN}"}, timeout=10)
+                r.raise_for_status()
+                pr_j = r.json()
+                pr_number = existing_pr_number
+                pr_url = pr_j.get("html_url") or f"{GITEA_URL}/{owner}/{name}/pulls/{pr_number}"
+                emit_event("worker.pr", ticket_id, {"action": "updated", "pr_number": pr_number, "url": pr_url})
+            except Exception as e:
+                await patch_run(ticket_id, last_error=str(e))
+                return {"pr_url": None, "pr_number": 0}
+        else:
+            try:
+                r = httpx.get(f"{base_url}", headers={"Authorization": f"token {GITEA_TOKEN}"}, timeout=10)
+                r.raise_for_status()
+                default_branch = r.json().get("default_branch", "main")
+            except Exception as e:
+                await patch_run(
+                    ticket_id,
+                    last_error=f"GET repo failed (repo may not exist or token has no access): {e}",
+                )
+                return {"pr_url": None, "pr_number": 0}
+            try:
+                logger.info("Creating Gitea PR: head=%s base=%s", branch, default_branch)
+                pr_r = httpx.post(
+                    f"{base_url}/pulls",
+                    headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
+                    json={"title": f"[{ticket_id}] Task", "body": body[:5000], "head": branch, "base": default_branch},
+                    timeout=15,
+                )
+                if pr_r.status_code >= 400:
+                    logger.error("Gitea PR creation failed %d: %s", pr_r.status_code, pr_r.text[:500])
+                    body_preview = (pr_r.text or "")[:400]
+                    if pr_r.status_code == 404:
+                        err_msg = (
+                            f"Create PR failed (404). Head branch '{branch}' may not exist on Gitea. "
+                            "Ensure origin remote points to this repo and push succeeded. "
+                            f"Gitea response: {body_preview}"
+                        )
+                    else:
+                        err_msg = f"Gitea PR creation failed {pr_r.status_code}: {body_preview}"
+                    await patch_run(ticket_id, last_error=err_msg)
+                    emit_event("worker.error", ticket_id, {"phase": "open_pr", "message": err_msg})
+                    return {"pr_url": None, "pr_number": 0}
+                pr_r.raise_for_status()
+                pr_j = pr_r.json()
+                pr_number = pr_j.get("number") or pr_j.get("index") or 0
+                pr_url = pr_j.get("html_url") or f"{GITEA_URL}/{owner}/{name}/pulls/{pr_number}"
+                emit_event("worker.pr", ticket_id, {"action": "created", "pr_number": pr_number, "url": pr_url})
+            except Exception as e:
+                err_msg = str(e)
+                if "404" in err_msg and "/pulls" in err_msg:
+                    err_msg = (
+                        f"Create PR failed (404). Head branch '{branch}' may not exist on Gitea. "
+                        "Push may have failed or origin may point elsewhere. "
+                        f"Raw: {e}"
+                    )
+                await patch_run(ticket_id, last_error=err_msg)
+                emit_event("worker.error", ticket_id, {"phase": "open_pr", "message": err_msg})
+                return {"pr_url": None, "pr_number": 0}
     elif GITHUB_TOKEN and repo_slug:
         try:
             import git
@@ -518,17 +696,28 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
         except Exception as e:
             await patch_run(ticket_id, last_error=f"Push failed: {e}")
             return {"pr_url": None, "pr_number": 0}
-        try:
-            from github import Github
-            gh = Github(GITHUB_TOKEN)
-            repo_obj = gh.get_repo(repo_slug)
-            pr = repo_obj.create_pull(title=f"[{ticket_id}] Task", body=body[:5000], head=branch, base=repo_obj.default_branch)
-            pr_url = pr.html_url
-            pr_number = pr.number
-            _post_review_and_merge_github(pr, body)
-        except Exception as e:
-            await patch_run(ticket_id, last_error=str(e))
-            return {"pr_url": None, "pr_number": 0}
+        if existing_pr_number > 0:
+            try:
+                from github import Github
+                gh = Github(GITHUB_TOKEN)
+                pr = gh.get_repo(repo_slug).get_pull(existing_pr_number)
+                pr_url = pr.html_url
+                pr_number = existing_pr_number
+                emit_event("worker.pr", ticket_id, {"action": "updated", "pr_number": pr_number, "url": pr_url})
+            except Exception as e:
+                await patch_run(ticket_id, last_error=str(e))
+                return {"pr_url": None, "pr_number": 0}
+        else:
+            try:
+                from github import Github
+                gh = Github(GITHUB_TOKEN)
+                repo_obj = gh.get_repo(repo_slug)
+                pr = repo_obj.create_pull(title=f"[{ticket_id}] Task", body=body[:5000], head=branch, base=repo_obj.default_branch)
+                pr_url = pr.html_url
+                pr_number = pr.number
+            except Exception as e:
+                await patch_run(ticket_id, last_error=str(e))
+                return {"pr_url": None, "pr_number": 0}
     await patch_run(ticket_id, pr_number=pr_number if pr_number else None, pr_url=pr_url)
     await transition(ticket_id, "Review", note="PR opened", by="worker")
     if (path / "task_result.json").exists():
@@ -539,11 +728,205 @@ async def open_or_update_pr(ticket_id: str, workspace_path: str, branch: str, re
     return {"pr_url": pr_url, "pr_number": pr_number}
 
 
+def _post_pr_comment(repo_slug: str, pr_number: int, body: str, _review_round: int = 1) -> None:
+    """Post a comment on the PR (issue comment API) so the review appears in the PR thread."""
+    owner, name = repo_slug.strip().split("/", 1)
+    comment_body = body[:4000] if len(body) > 4000 else body
+    if GITEA_URL and GITEA_TOKEN:
+        import httpx
+        base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
+        # In Gitea, a PR is an issue; use issues/{index}/comments
+        r = httpx.post(
+            f"{base_url}/issues/{pr_number}/comments",
+            headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
+            json={"body": comment_body[:4000]},
+            timeout=10,
+        )
+        if r.status_code >= 400:
+            logger.warning("review_pr: failed to post PR comment: %d %s", r.status_code, r.text[:200])
+    elif GITHUB_TOKEN:
+        from github import Github
+        gh = Github(GITHUB_TOKEN)
+        pr = gh.get_repo(repo_slug.strip()).get_pull(pr_number)
+        pr.create_issue_comment(comment_body)
+
+
+@activity.defn
+async def post_pr_comment(ticket_id: str, pr_number: int, repo: str, body: str) -> None:
+    """Post a comment on the PR so the back-and-forth is visible (e.g. 'Implementer is addressing feedback...')."""
+    _post_pr_comment(repo, pr_number, body)
+
+
+@activity.defn
+async def review_pr(
+    ticket_id: str,
+    pr_number: int,
+    repo: str,
+    workspace_path: str,
+    skip_human_approval: bool = True,
+    review_round: int = 1,
+) -> dict:
+    """
+    Fetch PR (body + diff), run Reviewer LLM, post review to PR, merge if pass.
+    Returns dict: verdict (pass/fail/risky), body (review summary).
+    When verdict is risky and not skip_human_approval: also needs_approval=True, decision_id=<uuid>.
+    """
+    import uuid
+    import httpx
+    path = Path(workspace_path)
+    task_result_path = path / "task_result.json"
+    task_spec = ""
+    checklist = []
+    implementer_summary = ""
+    if task_result_path.exists():
+        try:
+            data = json.loads(task_result_path.read_text())
+            task_spec = (data.get("task_spec") or "").strip()
+            checklist = data.get("checklist") or []
+            if not isinstance(checklist, list):
+                checklist = [str(checklist)]
+            implementer_summary = (data.get("implementer_summary") or "").strip()
+        except Exception as e:
+            logger.warning("review_pr: failed to read task_result.json: %s", e)
+    if not task_spec:
+        task_spec = f"Task {ticket_id}"
+
+    pr_body = ""
+    pr_diff = ""
+    owner, name = repo.strip().split("/", 1)
+    if GITEA_URL and GITEA_TOKEN:
+        base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
+        try:
+            r = httpx.get(
+                f"{base_url}/pulls/{pr_number}",
+                headers={"Authorization": f"token {GITEA_TOKEN}"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            pr_body = (r.json().get("body") or "").strip()
+            diff_r = httpx.get(
+                f"{base_url}/pulls/{pr_number}.diff",
+                headers={"Authorization": f"token {GITEA_TOKEN}"},
+                timeout=30,
+            )
+            if diff_r.status_code == 200:
+                pr_diff = (diff_r.text or "").strip()
+        except Exception as e:
+            logger.warning("review_pr: fetch PR failed: %s", e)
+    elif GITHUB_TOKEN:
+        try:
+            from github import Github
+            gh = Github(GITHUB_TOKEN)
+            repo_obj = gh.get_repo(repo.strip())
+            pr = repo_obj.get_pull(pr_number)
+            pr_body = (pr.body or "").strip()
+            try:
+                pr_diff = (pr.diff() or "").strip()
+            except Exception:
+                pr_diff = ""
+            if not pr_diff and hasattr(pr, "get_files"):
+                files = pr.get_files() or []
+                pr_diff = "\n".join(f"{f.filename}\n{f.patch or ''}" for f in files[:30])
+        except Exception as e:
+            logger.warning("review_pr: fetch PR (GitHub) failed: %s", e)
+
+    from langgraph_runner import review_pr_content
+    verdict, body = review_pr_content(
+        task_spec=task_spec,
+        checklist=checklist,
+        pr_body=pr_body,
+        pr_diff=pr_diff,
+        implementer_summary=implementer_summary,
+        ticket_id=ticket_id,
+    )
+    verdict = (verdict or "pass").strip().lower()
+
+    event = "APPROVE" if verdict == "pass" else ("REQUEST_CHANGES" if verdict == "fail" else "COMMENT")
+    review_body = (body or "Task completed.").strip()
+    # Post as formal review (sets approve / request changes state)
+    if GITEA_URL and GITEA_TOKEN:
+        base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
+        httpx.post(
+            f"{base_url}/pulls/{pr_number}/reviews",
+            headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
+            json={"event": event, "body": review_body[:4000]},
+            timeout=10,
+        )
+        # Post same as PR comment so the full back-and-forth is visible in the PR thread
+        comment_text = f"**Reviewer** (round {review_round}): Verdict: **{verdict}**\n\n{review_body}"
+        _post_pr_comment(repo, pr_number, comment_text[:4000], review_round)
+        if verdict == "pass":
+            try:
+                merge_r = httpx.post(
+                    f"{base_url}/pulls/{pr_number}/merge",
+                    headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
+                    json={"Do": "merge"},
+                    timeout=15,
+                )
+                merge_r.raise_for_status()
+                logger.info("review_pr: Gitea PR #%d merged", pr_number)
+                emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "merged": True})
+            except Exception as merge_err:
+                logger.warning("review_pr: Gitea merge failed: %s", merge_err)
+    elif GITHUB_TOKEN:
+        from github import Github
+        gh = Github(GITHUB_TOKEN)
+        repo_obj = gh.get_repo(repo.strip())
+        pr = repo_obj.get_pull(pr_number)
+        pr.create_review(event=event, body=review_body[:4000])
+        # Post same as PR comment so the full back-and-forth is visible in the PR thread
+        comment_text = f"**Reviewer** (round {review_round}): Verdict: **{verdict}**\n\n{review_body}"
+        _post_pr_comment(repo, pr_number, comment_text[:4000], review_round)
+        if verdict == "pass":
+            try:
+                pr.merge(merge_method=GITHUB_MERGE_METHOD)
+                logger.info("review_pr: GitHub PR #%d merged", pr_number)
+                emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "merged": True})
+            except Exception as merge_err:
+                logger.warning("review_pr: GitHub merge failed: %s", merge_err)
+
+    result = {"verdict": verdict, "body": body or ""}
+    if verdict == "risky" and not skip_human_approval:
+        decision_id = str(uuid.uuid4())
+        result["needs_approval"] = True
+        result["decision_id"] = decision_id
+        await patch_run(ticket_id, phase="AwaitingApproval", pending_approval_decision_id=decision_id)
+        await transition(ticket_id, "Blocked", note="Awaiting approval", by="worker")
+    return result
+
+
+@activity.defn
+async def merge_pr(ticket_id: str, pr_number: int, repo: str) -> None:
+    """Merge the PR (Gitea or GitHub). Used after human approves a risky review."""
+    owner, name = repo.strip().split("/", 1)
+    if GITEA_URL and GITEA_TOKEN:
+        base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
+        import httpx
+        r = httpx.post(
+            f"{base_url}/pulls/{pr_number}/merge",
+            headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
+            json={"Do": "merge"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        logger.info("merge_pr: Gitea PR #%d merged", pr_number)
+        emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "merged": True})
+    elif GITHUB_TOKEN:
+        from github import Github
+        gh = Github(GITHUB_TOKEN)
+        pr = gh.get_repo(repo.strip()).get_pull(pr_number)
+        pr.merge(merge_method=GITHUB_MERGE_METHOD)
+        logger.info("merge_pr: GitHub PR #%d merged", pr_number)
+        emit_event("worker.pr", ticket_id, {"action": "merged", "pr_number": pr_number, "merged": True})
+    else:
+        raise RuntimeError("No GITEA or GITHUB token configured for merge_pr")
+
+
 @activity.defn
 async def wait_for_review_and_ci(ticket_id: str, pr_number: int, repo: str | None = None) -> str:
     """Poll PR state (Gitea or GitHub). Returns 'merged' | 'changes_requested' | 'rejected'."""
     if not repo or pr_number <= 0:
-        return "merged"
+        return "rejected"
     import time
     if GITEA_URL and GITEA_TOKEN and repo:
         import httpx
@@ -629,11 +1012,36 @@ async def transition_ticket(ticket_id: str, to: str, note: str | None = None, by
 
 
 @activity.defn
-async def close_task(ticket_id: str, owner: str) -> None:
-    """POST /runs/release, transition ticket to Done, post update."""
-    emit_event("worker.phase", ticket_id, {"phase": "close_task", "detail": "releasing & transitioning to Done"})
+async def close_task(ticket_id: str, owner: str, transition_to: str = "Done") -> None:
+    """POST /runs/release, then transition ticket (Done or InProgress). Use InProgress when PR was not completed."""
+    emit_event("worker.phase", ticket_id, {"phase": "close_task", "detail": f"releasing & transitioning to {transition_to}"})
     result = await release(ticket_id, owner)
     if not result.get("released"):
         raise RuntimeError(result.get("error", "release failed"))
-    await transition(ticket_id, "Done", note="Closed by worker", by=owner)
-    await post_update(ticket_id, "Task closed.", author=owner)
+    await transition(ticket_id, transition_to, note="Closed by worker" if transition_to == "Done" else "Released (no PR completed)", by=owner)
+    await post_update(ticket_id, "Task closed." if transition_to == "Done" else "Run released; ticket left In Progress (PR required for Done).", author=owner)
+
+
+@activity.defn
+async def cleanup_workspace(workspace_path: str) -> None:
+    """Remove or reset the workspace after a task finishes."""
+    ws = Path(workspace_path)
+    if not ws.exists():
+        return
+
+    if WORKSPACE_PATH and str(ws) == str(Path(WORKSPACE_PATH).resolve()):
+        # Shared directory (Docker mode) -- reset git state, keep the folder
+        import subprocess
+        try:
+            subprocess.run(["git", "clean", "-fdx"], cwd=str(ws), capture_output=True, timeout=30, check=False)
+            subprocess.run(["git", "checkout", "main"], cwd=str(ws), capture_output=True, timeout=10, check=False)
+            logger.info("Cleaned workspace (WORKSPACE_PATH mode): %s", ws)
+        except Exception as e:
+            logger.warning("Workspace cleanup (git clean) failed: %s", e)
+    else:
+        # Per-ticket clone folder -- delete entirely
+        try:
+            shutil.rmtree(ws)
+            logger.info("Removed workspace folder: %s", ws)
+        except Exception as e:
+            logger.warning("Workspace cleanup (rmtree) failed: %s", e)

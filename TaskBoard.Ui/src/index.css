@@ -1033,6 +1033,60 @@ button.secondary:hover:not(:disabled) {
   max-width: 20rem;
 }
 
+.run-approval-actions {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.run-approval-heading {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #1a2430;
+  margin: 0;
+}
+
+.run-approval-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.run-approve-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #0f7b3c;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.run-approve-btn:hover:not(:disabled) {
+  background: #0c5f2e;
+}
+
+.run-reject-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #8b2635;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.run-reject-btn:hover:not(:disabled) {
+  background: #6d1e2a;
+}
+
+.run-approve-btn:disabled,
+.run-reject-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
 /* ─── Events ──────────────────────────────────────────────── */
 
 .event-list {
@@ -1494,6 +1548,14 @@ button.secondary:hover:not(:disabled) {
   border-bottom: none;
 }
 
+.gam-event-row-clickable {
+  cursor: pointer;
+}
+
+.gam-event-row-clickable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .gam-ticket-badge {
   flex-shrink: 0;
   font-size: 0.66rem;
@@ -1538,6 +1600,90 @@ button.secondary:hover:not(:disabled) {
 
 .gam-jump-btn:hover {
   background: #30363d;
+}
+
+/* ─── Event detail dialog (Activity Monitor) ───────────────── */
+
+.event-detail-backdrop {
+  z-index: 25;
+}
+
+.event-detail-dialog {
+  width: min(720px, 96vw);
+  max-height: 85vh;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #d0dcec;
+  box-shadow: 0 12px 48px rgba(16, 32, 52, 0.28);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.event-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e4edf5;
+  background: #f7fafe;
+  flex-shrink: 0;
+}
+
+.event-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.event-detail-type {
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #17365d;
+}
+
+.event-detail-ticket {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0d1117;
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+}
+
+.event-detail-time {
+  font-size: 0.78rem;
+  color: #5a6e82;
+}
+
+.event-detail-id {
+  font-size: 0.72rem;
+  color: #8b9cad;
+}
+
+.event-detail-dialog .modal-section-label {
+  flex-shrink: 0;
+  margin: 0 1rem;
+  padding-top: 0.6rem;
+}
+
+.event-detail-payload {
+  flex: 1;
+  min-height: 0;
+  margin: 0.5rem 1rem 1rem;
+  padding: 0.75rem 1rem;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 8px;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ─── Worker Activity Feed ────────────────────────────────── */

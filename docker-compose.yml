@@ -83,12 +83,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    env_file:
+      - .env.e2e
     environment:
       - TASKBOARD_URL=http://taskboard:5173
       - TASKBOARD_TOKEN=${TASKBOARD_TOKEN:-dev-token}
       - TEMPORAL_HOST=temporal:7233
       - WORKSPACE_PATH=/workspace
-      - SKIP_PR=1
+      # Gitea integration (GITEA_TOKEN from env_file; URL must be gitea:3000 inside container)
+      - GITEA_URL=http://gitea:3000
       # LLM: set one of these (e.g. via .env or docker compose env_file)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openai/gpt-4o-mini}
@@ -101,6 +104,8 @@ services:
         condition: service_healthy
       temporal:
         condition: service_started
+      gitea:
+        condition: service_healthy
 
 volumes:
   taskboard-data:

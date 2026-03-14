@@ -18,8 +18,8 @@ REPO_CLONE_ROOT = os.environ.get("REPO_CLONE_ROOT", "/tmp/dark-factory-workspace
 WORKSPACE_REPO = os.environ.get("WORKSPACE_REPO", "").strip()  # e.g. owner/repo or https://github.com/owner/repo.git
 # When set, this local directory is used as the workspace (no clone). Must be a git repo. One task at a time. All changes happen here.
 WORKSPACE_PATH = os.environ.get("WORKSPACE_PATH", "").strip()  # e.g. /Users/you/Code/GitHub/factory-workspace-1
-# When true (1), skip open PR and wait-for-review; just run Execute -> Tests -> Close. Use for local-only runs.
-SKIP_PR = os.environ.get("SKIP_PR", "").strip().lower() in ("1", "true", "yes")
+# When true (1), treat reviewer "risky" like "fail": route back to implementer with feedback, no human approval. Default True.
+SKIP_HUMAN_APPROVAL = os.environ.get("SKIP_HUMAN_APPROVAL", "1").strip().lower() in ("1", "true", "yes")
 TEMPORAL_HOST = os.environ.get("TEMPORAL_HOST", "localhost:7233")
 TEMPORAL_TASK_QUEUE = os.environ.get("TEMPORAL_TASK_QUEUE", "dark-factory")
 SLEEP_SECONDS_WHEN_NO_TASK = int(os.environ.get("SLEEP_SECONDS_WHEN_NO_TASK", "300"))

@@ -144,6 +144,11 @@ def _trunc(s: str, n: int = 200) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+def _trunc_long(s: str, n: int = 8000) -> str:
+    """Allow longer payloads (e.g. verdict summary, errors) so the full message is stored and visible in the UI."""
+    return s if len(s) <= n else s[:n] + "…"
+
+
 def emit_event(event_type: str, ticket_id: str | None = None, payload: dict | None = None) -> None:
     """Fire-and-forget: POST /events in a daemon thread so it never blocks the caller.
     Safe to call from both sync and async code."""

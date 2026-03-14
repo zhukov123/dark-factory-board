@@ -1,6 +1,6 @@
 # Dark Factory Worker
 
-Python Temporal worker that runs the DarkFactoryRun workflow: pick task → claim → prepare workspace → execute (LangGraph) → tests → PR → wait for review → close.
+Python Temporal worker that runs the DarkFactoryRun workflow: pick task → claim → prepare workspace → execute (LangGraph: planner + implementer) → tests → open PR → review PR (Reviewer LLM reviews the PR description and diff, posts review) → merge or re-run implementer on feedback → close.
 
 ## Setup
 
@@ -22,7 +22,6 @@ pip install -r requirements.txt
 | REPO_CLONE_ROOT | Directory for cloning repos (default: /tmp/dark-factory-workspaces) |
 | WORKSPACE_REPO | When set, this repo is used as the workspace for all tasks: clone and PR target (e.g. `owner/my-repo` or `https://github.com/owner/my-repo.git`). Overrides workflow/ticket repo. |
 | WORKSPACE_PATH | When set, this local directory is used as the workspace (no clone). All code changes happen here. One task at a time (e.g. `/Users/you/Code/GitHub/factory-workspace-1`). |
-| SKIP_PR | When `1`/`true`/`yes`, skip open PR and wait-for-review; flow is Execute → Tests → Close. Use with WORKSPACE_PATH for local-only runs. |
 | TEMPORAL_HOST | Temporal frontend (default: localhost:7233) |
 | TEMPORAL_TASK_QUEUE | Task queue name (default: dark-factory) |
 | SLEEP_SECONDS_WHEN_NO_TASK | Sleep when no eligible task (default: 300) |

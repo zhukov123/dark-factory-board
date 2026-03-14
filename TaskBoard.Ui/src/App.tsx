@@ -1,6 +1,6 @@
 import { DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { TaskBoardApiClient, type TicketPayload } from './apiClient'
 import { GlobalActivityMonitor } from './components/GlobalActivityMonitor'
 import { KanbanColumn } from './components/KanbanColumn'
@@ -64,6 +64,14 @@ function App() {
   const [insightsOpen, toggleInsights] = useSectionCollapse(SECTION_KEYS.insights)
   const [monitorOpen, toggleMonitor] = useSectionCollapse(SECTION_KEYS.monitor)
 
+  const boardDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleBoardEvent = useCallback(() => {
+    if (boardDebounceRef.current) clearTimeout(boardDebounceRef.current)
+    boardDebounceRef.current = setTimeout(() => {
+      void invalidateBoard(queryClient)
+    }, 500)
+  }, [queryClient])
+
   const client = useMemo(
     () =>
       new TaskBoardApiClient({
@@ -105,8 +113,12 @@ function App() {
       })
       return map
     }
+    // API returns deps batch keys in lowercase (DictionaryKeyPolicy); ticket.id may be mixed case
+    const batchKey = (tid: string) =>
+      Object.keys(batch).find((k) => k.toLowerCase() === tid.toLowerCase()) ?? null
     tickets.forEach((ticket) => {
-      map[ticket.id] = batch[ticket.id]?.blocked_by ?? []
+      const key = batchKey(ticket.id)
+      map[ticket.id] = key ? (batch[key]?.blocked_by ?? []) : []
     })
     return map
   }, [depsBatchQuery.data, tickets])
@@ -169,6 +181,21 @@ function App() {
   const transitionMutation = useMutation({
     mutationFn: ({ ticketId, to }: { ticketId: string; to: string }) =>
       client.transitionTicket(ticketId, to),
+    onSuccess: () => {
+      setErrorMessage('')
+      void invalidateBoard(queryClient)
+    },
+    onError: (error) => setErrorMessage(formatError(error)),
+  })
+
+  const backlogTickets = useMemo(
+    () => tickets.filter((t) => t.status === 'Backlog'),
+    [tickets],
+  )
+  const makeAllBacklogReadyMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map((id) => client.transitionTicket(id, 'Ready')))
+    },
     onSuccess: () => {
       setErrorMessage('')
       void invalidateBoard(queryClient)
@@ -310,6 +337,23 @@ function App() {
             value={filters.q}
             onChange={(e) => setFilters((c) => ({ ...c, q: e.target.value }))}
           />
+          <button
+            type="button"
+            className="secondary"
+            disabled={backlogTickets.length === 0 || makeAllBacklogReadyMutation.isPending}
+            onClick={() =>
+              makeAllBacklogReadyMutation.mutate(backlogTickets.map((t) => t.id))
+            }
+            title={
+              backlogTickets.length === 0
+                ? 'No Backlog tickets'
+                : `Move ${backlogTickets.length} Backlog ticket(s) to Ready`
+            }
+          >
+            {makeAllBacklogReadyMutation.isPending
+              ? 'Moving…'
+              : `Backlog → Ready (${backlogTickets.length})`}
+          </button>
         </div>
       </section>
 
@@ -457,6 +501,19 @@ function App() {
           }}
         />
       )}
+
+      {/* ── Activity Monitor (collapsible) ──────────────────── */}
+      <section className="panel">
+        <button type="button" className="app-section-header" onClick={toggleMonitor}>
+          <span className="app-section-chevron">{monitorOpen ? '▾' : '▸'}</span>
+          <span className="app-section-title">Activity Monitor</span>
+        </button>
+        {monitorOpen && (
+          <div className="app-section-body">
+            <GlobalActivityMonitor client={client} onBoardEvent={handleBoardEvent} />
+          </div>
+        )}
+      </section>
 
       {/* ── Kanban board (collapsible) ────────────────────────── */}
       <section className="panel">
@@ -624,19 +681,6 @@ function App() {
           </div>
 
         </div>}
-      </section>
-
-      {/* ── Activity Monitor (collapsible) ──────────────────── */}
-      <section className="panel">
-        <button type="button" className="app-section-header" onClick={toggleMonitor}>
-          <span className="app-section-chevron">{monitorOpen ? '▾' : '▸'}</span>
-          <span className="app-section-title">Activity Monitor</span>
-        </button>
-        {monitorOpen && (
-          <div className="app-section-body">
-            <GlobalActivityMonitor client={client} />
-          </div>
-        )}
       </section>
     </div>
   )

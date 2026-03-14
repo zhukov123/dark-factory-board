@@ -3,7 +3,7 @@ import asyncio
 import time
 from temporalio.client import Client
 
-from config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE, SKIP_PR
+from config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE, SKIP_HUMAN_APPROVAL
 from workflow import DarkFactoryRun
 
 
@@ -18,7 +18,7 @@ async def main() -> None:
             1800,                  # ttl_seconds
             60,                    # sleep_seconds_when_no_task
             3600,                  # max_idle_seconds
-            SKIP_PR,               # skip_pr — no PR/push, changes only in WORKSPACE_PATH
+            SKIP_HUMAN_APPROVAL,   # skip_human_approval — risky routes back to implementer, no pause
         ],
         id=f"dark-factory-{int(time.time())}",
         task_queue=TEMPORAL_TASK_QUEUE,
