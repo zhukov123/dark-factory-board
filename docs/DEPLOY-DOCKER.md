@@ -2,6 +2,26 @@
 
 Build the app once (on your machine or in CI), send the image to the server, and run it. **No code or builds on the server** — only Docker and the image.
 
+## Run everything (API + Web UI + Temporal + Worker)
+
+One stack with TaskBoard, Temporal, Temporal Web UI, and the coding agent:
+
+```bash
+# Optional: set LLM in .env (OPENROUTER_API_KEY or LMSTUDIO_BASE_URL)
+docker compose up -d
+```
+
+- **TaskBoard (API + Web UI):** http://localhost:5173  
+- **Temporal Web UI:** http://localhost:8080  
+- **Worker (agent):** Runs in its own container. The agent executes tasks (read_file, write_file, run_command) inside that container; the workspace is the mounted volume `worker-workspace` at `/workspace`. So all code the agent writes and commands it runs (e.g. `npm install`, `dotnet build`) happen **inside the worker container**, which has Python, Node, and .NET installed. This is the appropriate place for the agent: it has a full execution environment and an isolated workspace.
+
+To give the agent an LLM, set in `.env` or when running:
+
+- `OPENROUTER_API_KEY=sk-...` (and optionally `OPENROUTER_MODEL=...`), or  
+- `LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1` if the LLM runs on the host.
+
+---
+
 ## 1. Build the image (on your machine)
 
 From the repo root:

@@ -840,6 +840,11 @@ app.MapPatch("/runs/{ticketId}", async (
         run.PrNumber = request.PrNumber;
     }
 
+    if (request.PrUrl is not null)
+    {
+        run.PrUrl = request.PrUrl;
+    }
+
     if (request.LastCiState is not null)
     {
         if (!EnumParsers.TryParseCiState(request.LastCiState, out var state))

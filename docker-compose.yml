@@ -1,0 +1,109 @@
+# TaskBoard API + UI, Temporal, Temporal Web UI, Gitea (optional for E2E), and Worker (coding agent).
+# Usage: docker compose up -d
+# - TaskBoard (API + Web UI): http://localhost:5173
+# - Temporal Web UI: http://localhost:8080
+# - Gitea (when started): http://localhost:3000
+# - Worker runs in its own container with /workspace mounted; agent runs operations there.
+
+services:
+  gitea:
+    image: gitea/gitea:1.24
+    ports:
+      - "3000:3000"
+    environment:
+      - GITEA__server__DOMAIN=localhost
+      - GITEA__server__ROOT_URL=http://localhost:3000/
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__database__DB_TYPE=sqlite3
+      - USER_UID=1000
+      - USER_GID=1000
+    volumes:
+      - gitea-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/api/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 40s
+
+  taskboard:
+    build: .
+    ports:
+      - "5173:5173"
+    environment:
+      - TASKBOARD_TOKEN=${TASKBOARD_TOKEN:-dev-token}
+      - TaskBoard__AuthToken=${TASKBOARD_TOKEN:-dev-token}
+      - ConnectionStrings__Default=Data Source=/data/taskboard.db
+    volumes:
+      - taskboard-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:5173/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+    ports:
+      - "5432:5432"
+    volumes:
+      - temporal_pgdata:/var/lib/postgresql/data
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Browser connects from host, so use host's port
+      - TEMPORAL_ADDRESS=host.docker.internal:7233
+      - TEMPORAL_DEFAULT_NAMESPACE=default
+    depends_on:
+      - temporal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - TASKBOARD_URL=http://taskboard:5173
+      - TASKBOARD_TOKEN=${TASKBOARD_TOKEN:-dev-token}
+      - TEMPORAL_HOST=temporal:7233
+      - WORKSPACE_PATH=/workspace
+      - SKIP_PR=1
+      # LLM: set one of these (e.g. via .env or docker compose env_file)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local}
+    volumes:
+      - worker-workspace:/workspace
+    depends_on:
+      taskboard:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+volumes:
+  taskboard-data:
+  temporal_pgdata:
+  worker-workspace:
+  gitea-data:

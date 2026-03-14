@@ -17,6 +17,7 @@ export interface RunDto {
   lockExpiresAt: string | null
   branch: string | null
   prNumber: number | null
+  prUrl: string | null
   lastCiState: string
   lastSummary: string | null
   lastError: string | null

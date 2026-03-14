@@ -1,6 +1,11 @@
 **/bin/
 **/obj/
 worker/.env
+# E2E and local secrets (never commit)
+.env.e2e
+.e2e-ticket-ids
+.env.local
+
 TaskBoard.Ui/node_modules/
 TaskBoard.Ui/dist/
 TaskBoard.Api/*.db

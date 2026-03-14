@@ -28,7 +28,7 @@ pip install -r requirements.txt
 | SLEEP_SECONDS_WHEN_NO_TASK | Sleep when no eligible task (default: 300) |
 | MAX_IDLE_SECONDS | Exit after this many seconds with no task (optional) |
 | OPENROUTER_API_KEY | OpenRouter API key (for LangGraph LLM). Get one at https://openrouter.ai/settings/keys |
-| OPENROUTER_MODEL | OpenRouter model id (default: `openai/gpt-4o-mini`). e.g. `anthropic/claude-sonnet-4`, `google/gemini-pro` |
+| OPENROUTER_MODEL | OpenRouter model id (default: `minimax/minimax-m2.5`). Override with e.g. `openai/gpt-4o-mini`, `anthropic/claude-sonnet-4` |
 | LMSTUDIO_BASE_URL | Local OpenAI-compatible server URL (e.g. `http://localhost:1234/v1`). Server must expose `/v1/chat/completions` and `/v1/models`. If set and OPENROUTER_API_KEY is not set, LangGraph uses this. |
 | LMSTUDIO_MODEL | Model name as shown by the server (default: `local`). Must match a model returned by `/v1/models`. |
 

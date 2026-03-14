@@ -1,184 +1,119 @@
-# End-to-end test: Dark Factory with TaskBoard
+# E2E test: Dark Factory (2-ticket flow with Gitea)
 
-This guide runs the full stack with a few test work items and verifies the worker processes them.
+This runbook gets the **2-ticket E2E** passing: Gitea → bootstrap → TaskBoard + Temporal → seed 2 stories → worker runs both stories (scaffold API, then CRUD), opens PRs, posts reviewer-persona review, merges when pass, closes tickets.
 
 ## Prerequisites
 
-- .NET SDK (for TaskBoard API)
-- Python 3.11+ and `pip` (for worker)
-- One of:
-  - **Temporal CLI**: [Install](https://docs.temporal.io/cli#install) then `temporal server start-dev`
-  - **Docker**: `docker compose -f docker-compose.temporal.yml up -d`
-- (Optional) LLM for LangGraph: **OpenRouter** (`OPENROUTER_API_KEY`) or **LM Studio** (`LMSTUDIO_BASE_URL=http://localhost:1234/v1`, `LMSTUDIO_MODEL`). If neither is set, ExecuteTaskWithLangGraph does a no-op and returns success.
+- Docker (for Gitea, TaskBoard, Temporal)
+- Python 3.11+ with worker deps (`pip install -r worker/requirements.txt`)
+- `.env.e2e` with at least `OPENROUTER_API_KEY` (bootstrap will add Gitea vars)
 
-## 1. Start Temporal
-
-**Option A – Temporal CLI (single process, in-memory):**
+## 1. Start Gitea
 
 ```bash
-temporal server start-dev
+docker compose up -d gitea
 ```
 
-Leave this running. Default: frontend `localhost:7233`, Web UI `http://localhost:8233`.
+Wait until healthy (or ~30s). Gitea: http://localhost:3000
 
-**Option B – Docker (with Postgres):**
+## 2. Bootstrap Gitea (create admin, token, repo)
 
 ```bash
-docker compose -f docker-compose.temporal.yml up -d
+./scripts/gitea_bootstrap.sh
 ```
 
-Wait a few seconds for Temporal to be ready.
+This appends `GITEA_URL`, `GITEA_TOKEN`, `WORKSPACE_REPO` to `.env.e2e`.
 
----
-
-## 2. Start TaskBoard API
-
-In a **second terminal**:
+## 3. Load env and check
 
 ```bash
-cd /path/to/dark-factory-board
-dotnet run --project TaskBoard.Api --urls "http://localhost:5005"
+set -a && source .env.e2e && set +a
+./scripts/check-e2e-env.sh
 ```
 
-Or use the launch profile:
+Set `TASKBOARD_URL` and `TASKBOARD_TOKEN` if not in `.env.e2e` (e.g. `TASKBOARD_URL=http://localhost:5173`, `TASKBOARD_TOKEN=dev-token`).
+
+## 4. Start TaskBoard and Temporal (do not start the worker in Docker)
 
 ```bash
-dotnet run --project TaskBoard.Api --launch-profile http
+docker compose up -d taskboard temporal temporal-ui gitea
+# Do NOT run: docker compose up -d worker
+# The in-container worker uses SKIP_PR=1 and would close tickets without opening PRs.
+# For this E2E you run the worker locally with SKIP_PR=0 (see step 6).
 ```
 
-Use the URL shown (e.g. `http://localhost:5005`). Auth token in development is usually `dev-token` (see `appsettings.Development.json`).
+- TaskBoard (API + UI): http://localhost:5173  
+- Temporal Web UI: http://localhost:8080  
 
-Check:
+## 5. Seed the 2 E2E stories
 
 ```bash
-curl -s http://localhost:5005/healthz
-# {"ok":true}
+set -a && source .env.e2e && set +a
+export TASKBOARD_URL="${TASKBOARD_URL:-http://localhost:5173}"
+export TASKBOARD_TOKEN="${TASKBOARD_TOKEN:-dev-token}"
+./scripts/seed-e2e-stories.sh
 ```
 
----
+Story 1 (scaffold FastAPI task API) and Story 2 (CRUD) are created; Story 2 is blocked by Story 1.
 
-## 3. Seed test tickets
+## 6. Run the worker (local, with Gitea + PR flow)
 
-In a **third terminal** (or same as step 2 after API is up):
+From repo root, with **PR creation and merge** (set `SKIP_PR=0`). Run from **worker** directory so imports resolve:
 
 ```bash
-cd /path/to/dark-factory-board
-chmod +x scripts/seed-test-tickets.sh
-./scripts/seed-test-tickets.sh http://localhost:5005 dev-token
+set -a && source .env.e2e && set +a
+export TASKBOARD_URL="${TASKBOARD_URL:-http://localhost:5173}"
+export TASKBOARD_TOKEN="${TASKBOARD_TOKEN:-dev-token}"
+export TEMPORAL_HOST="${TEMPORAL_HOST:-localhost:7233}"
+export SKIP_PR=0
+cd worker && python main.py
 ```
 
-You should see three tickets created and the output of `GET /tickets?status=Ready` and `GET /pick-next`. Note the ticket IDs (e.g. T1, T2, T3).
+Worker will: pick Story 1 → prepare workspace (clone from Gitea) → execute (LangGraph) → tests → open PR → post review → merge → close → pick Story 2 → same flow → done.
 
-**Manual alternative (no script):**
+## 7. Start the workflow
+
+In another terminal:
 
 ```bash
-TOKEN=dev-token
-API=http://localhost:5005
-
-curl -X POST "$API/tickets" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title":"Add README section","status":"Ready","priority":1,"repo":"dark-factory-board","description":"Add API section to README."}'
+cd worker && python start_workflow.py
 ```
 
----
+Or via Temporal CLI: `temporal workflow start --task-queue dark-factory --type DarkFactoryRun`.
 
-## 4. Start the worker
+## 8. Run the verifier (required to confirm E2E pass)
 
-In a **fourth terminal**:
+In a third terminal, after starting the workflow, run the verification script. It polls TaskBoard until both tickets are **Done** (timeout 35 min), then checks that each run has **pr_url** or **pr_number** and that the Gitea repo has commits. Exit 0 = E2E passed.
 
 ```bash
-cd /path/to/dark-factory-board/worker
-pip install -r requirements.txt
-export TASKBOARD_URL=http://localhost:5005
-export TASKBOARD_TOKEN=dev-token
-# Optional: real LLM
-export OPENROUTER_API_KEY=sk-or-your-key
-export OPENROUTER_MODEL=openai/gpt-4o-mini
-
-python main.py
+set -a && source .env.e2e && set +a
+export TASKBOARD_URL="${TASKBOARD_URL:-http://localhost:5173}"
+export TASKBOARD_TOKEN="${TASKBOARD_TOKEN:-dev-token}"
+./scripts/verify-e2e.sh
 ```
 
-You should see logs like: `Connecting to Temporal at localhost:7233`, `Worker started on task queue dark-factory`. Leave it running.
+(Ticket IDs are read from `.e2e-ticket-ids` written by `seed-e2e-stories.sh`. Or pass them: `./scripts/verify-e2e.sh T3 T4`.)
 
----
+**The 2-ticket E2E is only “passed” when this verifier exits 0.**
 
-## 5. Start a workflow
+## 9. Manual verify (optional)
 
-With the worker running, start one workflow so it picks tasks from the board.
+- TaskBoard UI: open each ticket → Run State → **Open PR** link.
+- Gitea: http://localhost:3000/gitea/e2e-workspace/pulls and repo commits.
 
-**Option A – Temporal Web UI**
+**Expected duration:** Allow **20–40 minutes** for the 2-ticket run (each ticket: clone, LangGraph/LLM execute, tests, push, create PR, review, merge). Worker logs `Prepare workspace started/finished` and `Execute (LangGraph) started/finished` for each ticket so you can see progress.
 
-1. Open http://localhost:8233 (or the URL shown by `temporal server start-dev`).
-2. Namespace: `default`.
-3. **Workflows** → **Start Workflow**.
-4. Workflow type: `DarkFactoryRun`, Task queue: `dark-factory`.
-5. Input (JSON):
+**Empty Gitea repo:** The worker now handles an empty repo (no refs): it creates an orphan branch and an initial commit so it can push. No manual “initial commit” in Gitea is required.
 
-```json
-{
-  "owner": "worker-1",
-  "ttl_seconds": 1800,
-  "sleep_seconds_when_no_task": 60,
-  "max_idle_seconds": 3600
-}
-```
+**Single workflow:** Before starting, run `cd worker && python terminate_old_workflows.py` (no `--keep-latest`) so only one workflow runs; otherwise multiple workflows poll pick-next and can confuse the run.
 
-6. Start. The worker will pick the first Ready ticket and run the pipeline.
+## Token scope
 
-**Option B – Temporal CLI**
-
-```bash
-temporal workflow start \
-  --task-queue dark-factory \
-  --type DarkFactoryRun \
-  --input '{"owner":"worker-1","ttl_seconds":1800,"sleep_seconds_when_no_task":60,"max_idle_seconds":3600}'
-```
-
----
-
-## Where to watch progress and logs (besides TaskBoard)
-
-| Where | What you see |
-|-------|----------------|
-| **Temporal Web UI** | Workflow runs, current step, full history. Open **http://localhost:8233** (with `temporal server start-dev`). Go to **Workflows** → select your run → **History** to see each activity (PickNextTask, ClaimTask, PrepareWorkspace, ExecuteTaskWithLangGraph, etc.) and workflow log messages. |
-| **Worker terminal** | Live logs: connection, “Pick task”, “Claim”, activity start/complete, and any `workflow.logger.info` output (e.g. “No task eligible”, “Task closed”). Run `python main.py` in a terminal and leave it open. |
-| **Temporal CLI** | List and inspect workflows from the shell: `temporal workflow list --task-queue dark-factory`, `temporal workflow show -w <WorkflowId>` to see status and history. |
-
-TaskBoard still gives ticket status, run phase, attachments (`task_result.json`, `run_tests.log`), and `last_error`; use Temporal + worker for pipeline progress and execution logs.
-
----
-
-## 6. What to verify
-
-- **Worker logs**: Pick task → Claim → PrepareWorkspace → ExecuteTaskWithLangGraph → RunTaskTests → OpenOrUpdatePR → WaitForReviewAndCI → CloseTask. For a stub/no-GitHub run you may see failures or skips on clone/PR; the important part is claim → execute (or no-op) → close.
-- **TaskBoard API**:
-  - `GET /tickets` (or UI): first ticket moves **Ready → InProgress** when claimed, then to **Review** after “PR” step, then **Done** after close (when using stub “merged”).
-  - `GET /tickets/{id}`: `run` has `phase`, `lock_owner` (cleared after release), and optionally `branch`, `pr_number`.
-  - `GET /tickets/{id}/attachments`: after a run you may see `task_result.json` and/or `run_tests.log` if the activity uploaded them.
-- **Temporal UI**: Workflow history shows activity tasks (PickNextTask, ClaimTask, PrepareWorkspace, ExecuteTaskWithLangGraph, RunTaskTests, OpenOrUpdatePR, WaitForReviewAndCI, CloseTask).
-
----
-
-## 7. Run multiple tickets
-
-The workflow loops: after closing one task it calls **pick-next** again. With three Ready tickets and `max_idle_seconds` large enough, the same workflow will process all three (one after another). To process only one and exit quickly, set e.g. `max_idle_seconds: 60` and start the workflow when at least one ticket is Ready; after that ticket is closed, when no task is eligible for 60 seconds the workflow exits.
-
----
-
-## 8. Cleanup
-
-- Stop worker: Ctrl+C in the worker terminal.
-- Stop API: Ctrl+C in the API terminal.
-- Stop Temporal: Ctrl+C in the `temporal server start-dev` terminal, or `docker compose -f docker-compose.temporal.yml down` if using Docker.
-- To reset the board: delete or transition tickets via API/UI, or use a fresh DB by removing `taskboard.db` / `taskboard.dev.db` and restarting the API (tickets will be recreated by re-running the seed script).
-
----
+- **Gitea token:** Created by bootstrap with repo scope (clone, push, create PR, create review, merge).
+- **GitHub (optional):** Token needs Contents, Pull requests (read/write), and **merge** permission.
 
 ## Troubleshooting
 
-| Issue | Check |
-|-------|--------|
-| Worker: "Failed client connect" | Temporal not running or wrong host/port. Use `TEMPORAL_HOST=localhost:7233`. |
-| Worker: "401" or "invalid token" | `TASKBOARD_TOKEN` must match API (e.g. `dev-token`). |
-| Pick-next returns "none eligible" | Tickets must be **Ready** and have no unmet dependencies. Use seed script or create tickets with `status: Ready`. |
-| ExecuteTaskWithLangGraph no-op | Without `OPENROUTER_API_KEY`, the runner returns success without calling the LLM. Set the key for real planner/implementer/reviewer steps. |
-| OpenOrUpdatePR / clone fails | Set `GITHUB_TOKEN` and use a real `repo` (e.g. `owner/repo`). For a quick E2E test, stub behavior (no clone) still allows claim → execute → close. |
+- **Gitea not ready:** Increase wait in `gitea_bootstrap.sh` or run `docker compose logs gitea`.
+- **Worker “Push failed”:** Ensure `GITEA_URL` is reachable from the worker (use `localhost:3000` when worker runs on host).
+- **Migration:** TaskBoard applies migrations on startup; `pr_url` is added automatically.

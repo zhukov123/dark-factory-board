@@ -367,10 +367,18 @@ export function TicketModal({
                         </dd>
                       </>
                     )}
-                    {ticket.run?.prNumber != null && (
+                    {(ticket.run?.prUrl ?? ticket.run?.prNumber != null) && (
                       <>
                         <dt>PR</dt>
-                        <dd>#{ticket.run.prNumber}</dd>
+                        <dd>
+                          {ticket.run.prUrl ? (
+                            <a href={ticket.run.prUrl} target="_blank" rel="noopener noreferrer">
+                              Open PR
+                            </a>
+                          ) : (
+                            <>#{ticket.run!.prNumber}</>
+                          )}
+                        </dd>
                       </>
                     )}
                     <dt>CI</dt>

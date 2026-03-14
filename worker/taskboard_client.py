@@ -73,6 +73,7 @@ async def patch_run(
     phase: str | None = None,
     branch: str | None = None,
     pr_number: int | None = None,
+    pr_url: str | None = None,
     last_ci_state: str | None = None,
     last_summary: str | None = None,
     last_error: str | None = None,
@@ -87,6 +88,8 @@ async def patch_run(
         payload["branch"] = branch
     if pr_number is not None:
         payload["pr_number"] = pr_number
+    if pr_url is not None:
+        payload["pr_url"] = pr_url
     if last_ci_state is not None:
         payload["last_ci_state"] = last_ci_state
     if last_summary is not None:

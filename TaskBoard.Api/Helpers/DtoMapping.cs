@@ -28,6 +28,7 @@ public static class DtoMapping
         run.LockExpiresAt,
         run.Branch,
         run.PrNumber,
+        run.PrUrl,
         run.LastCiState.ToString().ToLowerInvariant(),
         run.LastSummary,
         run.LastError,

@@ -24,6 +24,7 @@ RUN dotnet publish -c Release -o /app/out
 # Runtime: API + UI (static files in wwwroot), one process
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS runtime
 ARG PORT=5173
+RUN apk add --no-cache wget
 WORKDIR /app
 COPY --from=api-build /app/out ./
 

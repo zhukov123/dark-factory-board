@@ -63,6 +63,7 @@ public sealed class TaskBoardDbContext(DbContextOptions<TaskBoardDbContext> opti
             entity.Property(r => r.LockExpiresAt).HasColumnName("lock_expires_at");
             entity.Property(r => r.Branch).HasColumnName("branch");
             entity.Property(r => r.PrNumber).HasColumnName("pr_number");
+            entity.Property(r => r.PrUrl).HasColumnName("pr_url");
             entity.Property(r => r.LastCiState).HasColumnName("last_ci_state").HasConversion<string>();
             entity.Property(r => r.LastSummary).HasColumnName("last_summary");
             entity.Property(r => r.LastError).HasColumnName("last_error");

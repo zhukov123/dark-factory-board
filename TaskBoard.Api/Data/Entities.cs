@@ -43,6 +43,7 @@ public sealed class RunEntity
     public DateTime? LockExpiresAt { get; set; }
     public string? Branch { get; set; }
     public int? PrNumber { get; set; }
+    public string? PrUrl { get; set; }
     public CiState LastCiState { get; set; } = CiState.Unknown;
     public string? LastSummary { get; set; }
     public string? LastError { get; set; }

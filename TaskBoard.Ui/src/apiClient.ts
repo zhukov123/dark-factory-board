@@ -17,6 +17,7 @@ interface RawRunDto {
   lock_expires_at: string | null
   branch: string | null
   pr_number: number | null
+  pr_url: string | null
   last_ci_state: string
   last_summary: string | null
   last_error: string | null
@@ -303,6 +304,7 @@ function mapRun(run: RawRunDto): NonNullable<TicketDto['run']> {
     lockExpiresAt: run.lock_expires_at,
     branch: run.branch,
     prNumber: run.pr_number,
+    prUrl: run.pr_url ?? null,
     lastCiState: run.last_ci_state,
     lastSummary: run.last_summary,
     lastError: run.last_error,

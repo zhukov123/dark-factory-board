@@ -1,0 +1,34 @@
+# Worker (coding agent): Python + Node + .NET so run_command can run npm/dotnet.
+# Workspace is mounted at /workspace at runtime.
+FROM python:3.12-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 20 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# .NET 8 SDK via install script (works on amd64 and arm64; apt package can be arch-specific)
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+    && chmod +x /tmp/dotnet-install.sh \
+    && /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet \
+    && ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
+    && rm /tmp/dotnet-install.sh
+
+WORKDIR /app
+COPY worker/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY worker/ ./
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Default workspace; override with -v or COMPOSE volume
+ENV WORKSPACE_PATH=/workspace
+RUN mkdir -p /workspace
+
+# Start worker then one workflow (TASKBOARD_URL, TEMPORAL_HOST, etc. from env at runtime)
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

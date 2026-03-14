@@ -119,6 +119,7 @@ class TaskState(TypedDict):
     interrupt_decision_id: str | None
     task_result: dict | None
     reviewer_verdict: Literal["pass", "fail", "risky"] | None
+    reviewer_summary: str
     review_round: int
 
 
@@ -145,19 +146,28 @@ def _tools(workspace_path: str):
 
     @tool
     def run_command(cmd: str) -> str:
-        """Run a shell command in the workspace (e.g. lint, test)."""
-        import subprocess
+        """Run a shell command in the workspace (e.g. lint, test). Timeout 30s. Do NOT start long-running servers (uvicorn, flask, node, etc)."""
+        import subprocess, signal, os as _os
         try:
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
                 cwd=workspace_path,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=120,
+                start_new_session=True,
             )
-            out = (r.stdout or "") + (r.stderr or "")
-            return f"exit={r.returncode}\n{out}"
+            try:
+                stdout, stderr = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait()
+                return f"Command '{cmd}' timed out after 30 seconds. Do NOT start servers."
+            out = (stdout or "") + (stderr or "")
+            if len(out) > 3000:
+                out = out[:1500] + "\n...(truncated)...\n" + out[-1500:]
+            return f"exit={proc.returncode}\n{out}"
         except Exception as e:
             return str(e)
 
@@ -189,6 +199,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
     llm_with_tools = llm.bind_tools(tools)
 
     def planner(state: TaskState, config: dict | None = None) -> TaskState:
+        logger.info("PLANNER: starting")
         messages = [
             SystemMessage(content="You are a task planner. Given a task spec, output a short checklist of concrete steps (one per line). Reply with only the checklist, no preamble."),
             HumanMessage(content=state["task_spec"]),
@@ -199,6 +210,7 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
         content = out.content if hasattr(out, "content") else str(out)
         content = _strip_thinking(content)
         lines = [x.strip() for x in content.splitlines() if x.strip()]
+        logger.info("PLANNER: done, %d checklist items", len(lines))
         return {**state, "checklist": lines}
 
     tool_map = {t.name: t for t in tools}
@@ -245,7 +257,8 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
 
     def reviewer(state: TaskState, config: dict | None = None) -> TaskState:
         round_num = state.get("review_round", 0) + 1
-        files_edited = ", ".join(state.get("current_file_edits") or [])
+        edited_files = state.get("current_file_edits") or []
+        files_edited = ", ".join(edited_files)
         implementer_summary = (state.get("implementer_summary") or "").strip()
         review_content = (
             f"Task spec:\n{state['task_spec']}\n\nChecklist:\n" + "\n".join(state["checklist"])
@@ -253,22 +266,39 @@ def build_graph(workspace_path: str, checkpointer: SqliteSaver | None = None):
         )
         if implementer_summary:
             review_content += f"\n\nImplementer summary (what was done):\n{implementer_summary}"
+        ws = Path(workspace_path)
+        for rel in edited_files[:10]:
+            fp = ws / rel.lstrip("/")
+            if fp.exists():
+                content = fp.read_text(errors="replace")
+                if len(content) > 4000:
+                    content = content[:2000] + "\n...(truncated)...\n" + content[-2000:]
+                review_content += f"\n\n--- {rel} ---\n```\n{content}\n```"
+        logger.info("REVIEWER round %d: %d files, summary_len=%d", round_num, len(edited_files), len(implementer_summary))
         messages = [
-            SystemMessage(content="You are a reviewer. Reply with exactly one word: pass, fail, or risky. pass = task done; fail = needs more work; risky = needs human approval. Use the task spec and acceptance criteria to judge whether the checklist was completed and the implementer summary and files edited are consistent with the task."),
+            SystemMessage(content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the actual file contents provided below to judge whether the checklist was completed correctly."),
             HumanMessage(content=review_content),
         ]
         conf = config or {}
         run_config = _run_config_with_llm_log(conf, "reviewer")
         out = llm.invoke(messages, config=run_config)
-        content = _strip_thinking(out.content if hasattr(out, "content") else str(out)).lower()
+        raw = _strip_thinking(out.content if hasattr(out, "content") else str(out))
+        content = raw.lower()
         verdict = "pass"
         if "risky" in content:
             verdict = "risky"
         elif "fail" in content:
             verdict = "fail"
         if verdict == "fail" and round_num >= 2:
+            logger.info("REVIEWER: round %d fail -> auto-pass", round_num)
             verdict = "pass"
-        return {**state, "reviewer_verdict": verdict, "review_round": round_num}
+        logger.info("REVIEWER: verdict=%s round=%d", verdict, round_num)
+        # First line = verdict word; rest = review summary for PR review body
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        summary = lines[1] if len(lines) > 1 else f"Reviewer verdict: {verdict}."
+        if len(lines) > 2:
+            summary = " ".join(lines[1:])[:2000]
+        return {**state, "reviewer_verdict": verdict, "reviewer_summary": summary, "review_round": round_num}
 
     def route_after_review(state: TaskState) -> Literal["implementer", "end"]:
         if state.get("reviewer_verdict") == "fail" and state.get("review_round", 0) < 2:
@@ -305,6 +335,10 @@ def run_task(
         return task_result, True, None
 
     db_path = Path(workspace_path) / ".langgraph_checkpoints.sqlite"
+    if db_path.exists():
+        db_path.unlink()
+        logger.info("Cleared stale checkpoint DB for thread %s", thread_id)
+    logger.info("run_task: building graph for thread=%s workspace=%s", thread_id, workspace_path)
     with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
         graph = build_graph(workspace_path, checkpointer=checkpointer)
 
@@ -318,6 +352,7 @@ def run_task(
             "interrupt_decision_id": interrupt_decision_id,
             "task_result": None,
             "reviewer_verdict": None,
+            "reviewer_summary": "",
             "review_round": 0,
         }
 
@@ -328,21 +363,29 @@ def run_task(
                 "llm_log_dir": str(log_dir),
             }
         }
+        logger.info("run_task: invoking graph (resume=%s)...", bool(interrupt_decision_id))
+        import time as _time
+        t0 = _time.monotonic()
         if interrupt_decision_id:
             result = graph.invoke(None, config=config)
         else:
             result = graph.invoke(initial, config=config)
+        elapsed = _time.monotonic() - t0
+        logger.info("run_task: graph completed in %.1fs", elapsed)
 
     state = result if isinstance(result, dict) else {}
     verdict = state.get("reviewer_verdict")
     checklist = state.get("checklist", [])
     edits = state.get("current_file_edits", [])
 
+    reviewer_summary = (state.get("reviewer_summary") or "").strip() or f"Reviewer verdict: {verdict}."
     task_result = {
         "assumptions": [],
         "files_changed": edits,
         "tests_run": [],
         "pass": verdict == "pass",
+        "reviewer_verdict": verdict,
+        "review_summary": reviewer_summary,
     }
     result_path = Path(workspace_path) / "task_result.json"
     result_path.write_text(json.dumps(task_result, indent=2))

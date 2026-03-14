@@ -23,7 +23,11 @@ from activities import (
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", force=True)
+    import sys
+    for h in logging.root.handlers:
+        h.setStream(sys.stderr)
+        h.flush = lambda: sys.stderr.flush()
     logger = logging.getLogger("worker")
 
     logger.info("Connecting to Temporal at %s", TEMPORAL_HOST)
