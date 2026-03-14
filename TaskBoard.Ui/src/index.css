@@ -1372,6 +1372,174 @@ button.secondary:hover:not(:disabled) {
   }
 }
 
+/* ─── App-level Collapsible Sections ──────────────────────── */
+
+.app-section-header {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.15rem 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1d2530;
+  border-radius: 6px;
+  transition: color 0.12s;
+}
+
+.app-section-header:hover {
+  color: #1a6fba;
+}
+
+.app-section-chevron {
+  font-size: 0.7rem;
+  color: #8c99a6;
+  flex-shrink: 0;
+  width: 1em;
+  text-align: center;
+}
+
+.app-section-header:hover .app-section-chevron {
+  color: #1a6fba;
+}
+
+.app-section-title {
+  margin: 0;
+}
+
+.app-section-badge {
+  margin-left: auto;
+  background: #dce8f5;
+  color: #17365d;
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.app-section-body {
+  padding-top: 0.5rem;
+}
+
+/* ─── Global Activity Monitor ────────────────────────────── */
+
+.gam-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.gam-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.gam-title {
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #4a6178;
+}
+
+.gam-active-count {
+  font-size: 0.74rem;
+  color: #6e7681;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+}
+
+.gam-clear-btn {
+  margin-left: auto;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  background: transparent;
+  border: 1px solid #d0dcec;
+  color: #6b7f94;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.gam-clear-btn:hover {
+  background: #eef3f9;
+  color: #1a2430;
+}
+
+.gam-feed {
+  flex: 1;
+  overflow-y: auto;
+  background: #0d1117;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #c9d1d9;
+  min-height: 120px;
+  max-height: 360px;
+}
+
+.gam-event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+  border-bottom: 1px solid #161b22;
+}
+
+.gam-event-row:last-child {
+  border-bottom: none;
+}
+
+.gam-ticket-badge {
+  flex-shrink: 0;
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #0d1117;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+  letter-spacing: 0.02em;
+  min-width: 2.2em;
+  text-align: center;
+}
+
+.gam-event-time {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: #484f58;
+  min-width: 5.5em;
+}
+
+.gam-event-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gam-jump-btn {
+  position: absolute;
+  bottom: 0.8rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.9rem;
+  font-size: 0.72rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  background: #21262d;
+  color: #58a6ff;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.gam-jump-btn:hover {
+  background: #30363d;
+}
+
 /* ─── Worker Activity Feed ────────────────────────────────── */
 
 .waf-container {

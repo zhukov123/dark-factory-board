@@ -1,7 +1,8 @@
 import { DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { TaskBoardApiClient, type TicketPayload } from './apiClient'
+import { GlobalActivityMonitor } from './components/GlobalActivityMonitor'
 import { KanbanColumn } from './components/KanbanColumn'
 import { TicketModal } from './components/TicketModal'
 import { TokenGate } from './components/TokenGate'
@@ -12,6 +13,27 @@ import './index.css'
 
 const TOKEN_STORAGE_KEY = 'taskboard_token'
 const BASE_URL_STORAGE_KEY = 'taskboard_api_base_url'
+
+const SECTION_KEYS = {
+  board: 'taskboard_section_board',
+  insights: 'taskboard_section_insights',
+  monitor: 'taskboard_section_monitor',
+} as const
+
+function useSectionCollapse(key: string, defaultOpen = true) {
+  const [open, setOpen] = useState(() => {
+    const stored = localStorage.getItem(key)
+    return stored !== null ? stored === 'true' : defaultOpen
+  })
+  const toggle = useCallback(() => {
+    setOpen((prev) => {
+      const next = !prev
+      localStorage.setItem(key, String(next))
+      return next
+    })
+  }, [key])
+  return [open, toggle] as const
+}
 
 const EMPTY_DRAFT: TicketDraft = {
   title: '',
@@ -37,6 +59,10 @@ function App() {
   const [createDraft, setCreateDraft] = useState<TicketDraft>(EMPTY_DRAFT)
   const [simulateTicketId, setSimulateTicketId] = useState('')
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+
+  const [boardOpen, toggleBoard] = useSectionCollapse(SECTION_KEYS.board)
+  const [insightsOpen, toggleInsights] = useSectionCollapse(SECTION_KEYS.insights)
+  const [monitorOpen, toggleMonitor] = useSectionCollapse(SECTION_KEYS.monitor)
 
   const client = useMemo(
     () =>
@@ -432,31 +458,42 @@ function App() {
         />
       )}
 
-      {/* ── Kanban board ─────────────────────────────────────── */}
+      {/* ── Kanban board (collapsible) ────────────────────────── */}
       <section className="panel">
-        <h2>Board</h2>
-        {ticketsQuery.isLoading && <div className="loading-hint">Loading…</div>}
-        <DndContext sensors={sensors} onDragEnd={(event) => handleDragEnd(event, tickets, transitionMutation)}>
-          <div className="kanban-grid">
-            {STATUSES.map((status) => (
-              <KanbanColumn
-                key={status}
-                status={status}
-                tickets={ticketsByStatus.get(status) ?? []}
-                blockersByTicket={blockersByTicket}
-                eligibleIds={localEligible}
-                lockedIds={activeLocks}
-                onSelect={openTicketDetails}
-              />
-            ))}
+        <button type="button" className="app-section-header" onClick={toggleBoard}>
+          <span className="app-section-chevron">{boardOpen ? '▾' : '▸'}</span>
+          <span className="app-section-title">Board</span>
+          <span className="app-section-badge">{tickets.length}</span>
+        </button>
+        {boardOpen && (
+          <div className="app-section-body">
+            {ticketsQuery.isLoading && <div className="loading-hint">Loading…</div>}
+            <DndContext sensors={sensors} onDragEnd={(event) => handleDragEnd(event, tickets, transitionMutation)}>
+              <div className="kanban-grid">
+                {STATUSES.map((status) => (
+                  <KanbanColumn
+                    key={status}
+                    status={status}
+                    tickets={ticketsByStatus.get(status) ?? []}
+                    blockersByTicket={blockersByTicket}
+                    eligibleIds={localEligible}
+                    lockedIds={activeLocks}
+                    onSelect={openTicketDetails}
+                  />
+                ))}
+              </div>
+            </DndContext>
           </div>
-        </DndContext>
+        )}
       </section>
 
-      {/* ── Insights panel ───────────────────────────────────── */}
+      {/* ── Insights panel (collapsible) ────────────────────── */}
       <section className="panel insights-panel">
-        <h2>Insights</h2>
-        <div className="insights-grid">
+        <button type="button" className="app-section-header" onClick={toggleInsights}>
+          <span className="app-section-chevron">{insightsOpen ? '▾' : '▸'}</span>
+          <span className="app-section-title">Insights</span>
+        </button>
+        {insightsOpen && <div className="insights-grid">
 
           {/* Column 1: Dependency Graph */}
           <div className="insights-col">
@@ -586,7 +623,20 @@ function App() {
             </div>
           </div>
 
-        </div>
+        </div>}
+      </section>
+
+      {/* ── Activity Monitor (collapsible) ──────────────────── */}
+      <section className="panel">
+        <button type="button" className="app-section-header" onClick={toggleMonitor}>
+          <span className="app-section-chevron">{monitorOpen ? '▾' : '▸'}</span>
+          <span className="app-section-title">Activity Monitor</span>
+        </button>
+        {monitorOpen && (
+          <div className="app-section-body">
+            <GlobalActivityMonitor client={client} />
+          </div>
+        )}
       </section>
     </div>
   )
