@@ -12,6 +12,7 @@ TaskBoard.Api/*.db
 TaskBoard.Api/*.db-shm
 TaskBoard.Api/*.db-wal
 .vs/
+.cursor/
 .DS_Store
 
 # Publish output

@@ -16,7 +16,7 @@ fi
 
 export TASKBOARD_URL="${TASKBOARD_URL:-http://localhost:5005}"
 export TASKBOARD_TOKEN="${TASKBOARD_TOKEN:-dev-token}"
-export WORKSPACE_PATH="${WORKSPACE_PATH:-/Users/vishwakapoor/Documents/Code/GitHub/factory-workspace-1}"
+export WORKSPACE_PATH="${WORKSPACE_PATH:?Set WORKSPACE_PATH to your workspace directory}"
 export SKIP_PR="${SKIP_PR:-1}"
 
 echo "Stopping old worker..."
