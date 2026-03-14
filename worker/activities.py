@@ -419,15 +419,27 @@ async def execute_task_with_lang_graph(
 ) -> dict:
     """Run LangGraph (Planner -> Implementer). Write task_result.json and upload. Review happens in review_pr activity."""
     logger.info("Execute (LangGraph) started for %s", ticket_id)
-    detail = "re-running with reviewer feedback" if reviewer_feedback else "starting LangGraph"
+    # Same parameter is used for (1) PR reviewer fail/risky body and (2) build/test failure log
+    is_review_feedback = reviewer_feedback and "Build or tests failed" not in (reviewer_feedback[:80] or "")
+    if not reviewer_feedback:
+        detail = "starting LangGraph"
+    elif is_review_feedback:
+        detail = "re-running with reviewer feedback"
+    else:
+        detail = "re-running with build/test feedback"
     emit_event("worker.phase", ticket_id, {"phase": "execute", "detail": detail})
     if reviewer_feedback:
+        msg = (
+            "Implementer receives the following reviewer feedback (from failed/risky PR review). Full prompt is in logs/llm/."
+            if is_review_feedback
+            else "Implementer receives build/test failure output to fix. Full prompt is in logs/llm/."
+        )
         emit_event(
             "worker.debug",
             ticket_id,
             {
                 "stage": "execute_implementer_input",
-                "message": "Implementer receives the following reviewer feedback (from failed/risky PR review). Full prompt is in logs/llm/.",
+                "message": msg,
                 "reviewer_feedback": reviewer_feedback[:4000] + ("…" if len(reviewer_feedback) > 4000 else ""),
             },
         )
@@ -469,6 +481,69 @@ def _find_test_cwd(workspace_path: str) -> Path | None:
     return path if (path / "package.json").exists() or (path / "pyproject.toml").exists() else None
 
 
+def _detect_project_type(test_cwd: Path) -> str | None:
+    """Return project type for build/test registry: 'node', 'dotnet', 'python', or None."""
+    if not test_cwd or not test_cwd.exists():
+        return None
+    if (test_cwd / "package.json").exists():
+        return "node"
+    if list(test_cwd.glob("*.csproj")):
+        return "dotnet"
+    if (test_cwd / "pyproject.toml").exists() or (test_cwd / "setup.py").exists():
+        return "python"
+    return None
+
+
+def _node_build_commands(cwd: Path) -> list[tuple[str, list[str]]]:
+    """Return build commands for Node: npm run build only if script exists."""
+    commands: list[tuple[str, list[str]]] = []
+    pkg_path = cwd / "package.json"
+    if pkg_path.exists():
+        try:
+            pkg = json.loads(pkg_path.read_text())
+            scripts = pkg.get("scripts") or {}
+            if scripts.get("build"):
+                commands.append(("build (node)", ["npm", "run", "build"]))
+        except Exception:
+            pass
+    return commands
+
+
+def _node_test_commands(cwd: Path) -> list[tuple[str, list[str]]]:
+    """Return test commands for Node: prefer test:run then test."""
+    commands: list[tuple[str, list[str]]] = []
+    pkg_path = cwd / "package.json"
+    if pkg_path.exists():
+        try:
+            pkg = json.loads(pkg_path.read_text())
+            scripts = pkg.get("scripts") or {}
+            if scripts.get("test:run"):
+                commands.append(("test (node)", ["npm", "run", "test:run"]))
+            if scripts.get("test"):
+                commands.append(("test (node)", ["npm", "test"]))
+        except Exception:
+            commands.append(("test (node)", ["npm", "test"]))
+    if not commands:
+        commands.append(("test (node)", ["npm", "test"]))
+    return commands[:1]  # use first matching
+
+
+# Registry: (project_type, build_commands_factory, test_commands_factory)
+# Each factory takes Path cwd and returns list of (label, cmd_list).
+_BUILD_TEST_REGISTRY: list[tuple[str, list[tuple[str, list[str]]], list[tuple[str, list[str]]]]] = [
+    ("node", _node_build_commands, lambda cwd: _node_test_commands(cwd)),
+    ("dotnet", lambda cwd: [("build (dotnet)", ["dotnet", "build"])], lambda cwd: [("test (dotnet)", ["dotnet", "test", "--no-build"])]),
+    ("python", lambda cwd: [], lambda cwd: [("test (python)", ["pytest", "-v", "--tb=short"])]),
+]
+
+# Fallback when no project type detected: try these in order (no build).
+_FALLBACK_TEST_COMMANDS: list[tuple[str, list[str]]] = [
+    ("pytest", ["pytest", "-v", "--tb=short"]),
+    ("dotnet test", ["dotnet", "test", "-v", "n"]),
+    ("npm test", ["npm", "test"]),
+]
+
+
 @activity.defn
 async def workspace_has_code(workspace_path: str) -> dict:
     """Return whether workspace (or any subdir) has a project (package.json, pyproject.toml, *.csproj)."""
@@ -477,42 +552,102 @@ async def workspace_has_code(workspace_path: str) -> dict:
 
 @activity.defn
 async def run_task_tests(ticket_id: str, workspace_path: str) -> dict:
-    """Run project tests (pytest, dotnet test, or script); capture log; upload as attachment; return success/failure."""
+    """Run build (if any) then tests for the detected project type; capture log; persist for reviewer; return success/failure."""
     import subprocess
     path = Path(workspace_path)
     test_cwd = _find_test_cwd(workspace_path) or path
-    log_lines = []
+    log_lines: list[str] = []
     success = False
-    timeout_sec = 90
-    commands = [
-        (["pytest", "-v", "--tb=short"], test_cwd),
-        (["dotnet", "test", "--no-build", "-v", "n"], test_cwd),
-        (["npm", "test"], test_cwd),
-    ]
-    if (test_cwd / "package.json").exists():
-        commands = [(["npm", "test"], test_cwd)] + [c for c in commands if c[0] != ["npm", "test"]]
-    for cmd, cwd in commands:
-        if not cwd.exists():
-            continue
-        try:
-            r = subprocess.run(
-                cmd,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-            )
-            out = (r.stdout or "") + (r.stderr or "")
-            log_lines.append(f"=== {' '.join(cmd)} (cwd={cwd}) ===\n{out}")
-            success = r.returncode == 0
-            break
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
+    timeout_sec = 120
+
+    emit_event("worker.phase", ticket_id, {"phase": "build_test", "detail": "running build then tests"})
+
+    project_type = _detect_project_type(test_cwd)
+    if project_type and test_cwd.exists():
+        # Use registry for this project type
+        build_cmds: list[tuple[str, list[str]]] = []
+        test_cmds: list[tuple[str, list[str]]] = []
+        for ptype, build_factory, test_factory in _BUILD_TEST_REGISTRY:
+            if ptype == project_type:
+                build_cmds = build_factory(test_cwd) if callable(build_factory) else build_factory
+                test_cmds = test_factory(test_cwd) if callable(test_factory) else test_factory
+                break
+        build_ok = True
+        for label, cmd in build_cmds:
+            try:
+                r = subprocess.run(
+                    cmd,
+                    cwd=test_cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                )
+                out = (r.stdout or "") + (r.stderr or "")
+                log_lines.append(f"=== {label} (cwd={test_cwd}) ===\n{out}")
+                if r.returncode != 0:
+                    build_ok = False
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                log_lines.append(f"=== {label} (cwd={test_cwd}) ===\nError: {e}")
+                build_ok = False
+        if not build_ok:
+            success = False
+        else:
+            for label, cmd in test_cmds:
+                try:
+                    r = subprocess.run(
+                        cmd,
+                        cwd=test_cwd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_sec,
+                    )
+                    out = (r.stdout or "") + (r.stderr or "")
+                    log_lines.append(f"=== {label} (cwd={test_cwd}) ===\n{out}")
+                    success = r.returncode == 0
+                    break
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    log_lines.append(f"=== {label} (cwd={test_cwd}) ===\nError: {e}")
+                    success = False
+    if not log_lines:
+        # Fallback: try generic test commands in order
+        for label, cmd in _FALLBACK_TEST_COMMANDS:
+            if not test_cwd.exists():
+                continue
+            try:
+                r = subprocess.run(
+                    cmd,
+                    cwd=test_cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                )
+                out = (r.stdout or "") + (r.stderr or "")
+                log_lines.append(f"=== {label} (cwd={test_cwd}) ===\n{out}")
+                success = r.returncode == 0
+                break
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
     if not log_lines:
         log_lines.append("No test runner found (pytest, dotnet, npm).")
-    log_content = "\n".join(log_lines).encode()
+
+    log_content_str = "\n".join(log_lines)
+    log_content = log_content_str.encode()
+    excerpt_len = 4000
+    excerpt = log_content_str[-excerpt_len:] if len(log_content_str) > excerpt_len else log_content_str
+
+    # Persist for reviewer (last 8000 chars)
+    ci_log_path = path / ".dark-factory-ci.log"
+    try:
+        ci_log_path.write_text(log_content_str[-8000:] if len(log_content_str) > 8000 else log_content_str, encoding="utf-8")
+    except Exception as e:
+        logger.warning("run_task_tests: could not write .dark-factory-ci.log: %s", e)
+
     await upload_attachment(ticket_id, "run_tests.log", log_content, "text/plain")
-    excerpt = log_content[:2000].decode("utf-8", errors="replace") if len(log_content) > 2000 else log_content.decode("utf-8", errors="replace")
+    emit_event(
+        "worker.phase",
+        ticket_id,
+        {"phase": "build_test", "detail": f"done — {'passed' if success else 'failed'}"},
+    )
     return {"success": success, "log_excerpt": excerpt}
 
 
@@ -547,6 +682,15 @@ async def open_or_update_pr(
         except Exception:
             pass
     body = _format_pr_body_from_task_result(tr, ticket_id) if tr else f"Task {ticket_id}"
+
+    ci_log_path = path / ".dark-factory-ci.log"
+    if ci_log_path.exists():
+        try:
+            ci_log_text = ci_log_path.read_text(encoding="utf-8", errors="replace")
+            snippet = ci_log_text[-1500:] if len(ci_log_text) > 1500 else ci_log_text
+            body = body + "\n\n---\n\n## Build & test (last run)\n\n```\n" + snippet + "\n```"
+        except Exception as e:
+            logger.debug("open_or_update_pr: could not read .dark-factory-ci.log: %s", e)
 
     # Descriptive PR title: [ticket_id] Task title (run_guid)
     run_guid = ""
@@ -916,6 +1060,15 @@ async def review_pr(
     except Exception as e:
         logger.debug("review_pr: git diff --name-only failed: %s", e)
 
+    build_and_test_output = ""
+    ci_log_path = path / ".dark-factory-ci.log"
+    if ci_log_path.exists():
+        try:
+            full_log = ci_log_path.read_text(encoding="utf-8", errors="replace")
+            build_and_test_output = full_log[-3000:] if len(full_log) > 3000 else full_log
+        except Exception as e:
+            logger.debug("review_pr: could not read .dark-factory-ci.log: %s", e)
+
     from langgraph_runner import review_pr_content
     emit_event("worker.phase", ticket_id, {"phase": "reviewer", "detail": "waiting for LLM response"})
     verdict, body = review_pr_content(
@@ -926,6 +1079,7 @@ async def review_pr(
         implementer_summary=implementer_summary,
         ticket_id=ticket_id,
         all_changed_files=all_changed_files,
+        build_and_test_output=build_and_test_output,
     )
     emit_event("worker.phase", ticket_id, {"phase": "reviewer", "detail": "done"})
     verdict = (verdict or "pass").strip().lower()

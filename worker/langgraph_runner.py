@@ -416,11 +416,13 @@ def review_pr_content(
     implementer_summary: str = "",
     ticket_id: str | None = None,
     all_changed_files: list[str] | None = None,
+    build_and_test_output: str = "",
 ) -> tuple[str, str]:
     """
     Run the Reviewer LLM on PR content (body + diff). Returns (verdict, summary).
     verdict is one of pass, fail, risky. Used by review_pr activity.
     all_changed_files: from git so reviewer sees full list even if implementer reported fewer.
+    build_and_test_output: last run's build and test log so reviewer can fail if it shows errors.
     """
     llm = _get_llm()
     if llm is None:
@@ -438,9 +440,10 @@ def review_pr_content(
         if len(pr_diff) > 72000:
             pr_diff = pr_diff[:36000] + "\n...(truncated)...\n" + pr_diff[-36000:]
         review_content += f"\n\n--- PR diff ---\n```\n{pr_diff}\n```"
+    review_content += f"\n\n--- Build and test output (last run) ---\n{build_and_test_output or '(none)'}"
     messages = [
         SystemMessage(
-            content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the PR description and diff provided below to judge whether the checklist was completed correctly."
+            content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the PR description and diff provided below to judge whether the checklist was completed correctly. If the build or test output above shows errors or failures, you must respond with fail and explain."
         ),
         HumanMessage(content=review_content),
     ]

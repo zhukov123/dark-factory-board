@@ -100,10 +100,10 @@ class DarkFactoryRun:
                     tests_passed = True
                     break
                 log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
-                test_feedback = f"Tests failed. Fix the failing tests.\n\nTest output:\n{log_excerpt}"
+                test_feedback = f"Build or tests failed. Fix the errors below.\n\nOutput:\n{log_excerpt}"
                 await workflow.execute_activity(
                     "transition_ticket",
-                    args=[ticket_id, "InProgress", "Tests failed; re-running implementer", "worker"],
+                    args=[ticket_id, "InProgress", "Build or tests failed; re-running implementer", "worker"],
                     start_to_close_timeout=timedelta(seconds=30),
                 )
                 await workflow.execute_activity(
@@ -119,7 +119,7 @@ class DarkFactoryRun:
                 )
                 await workflow.execute_activity(
                     "transition_ticket",
-                    args=[ticket_id, "InProgress", "Tests failed after retries", "worker"],
+                    args=[ticket_id, "InProgress", "Build or tests failed after retries", "worker"],
                     start_to_close_timeout=timedelta(seconds=30),
                 )
                 await workflow.execute_activity(
@@ -201,10 +201,10 @@ class DarkFactoryRun:
                                 tests_passed_after_review = True
                                 break
                             log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
-                            test_feedback = f"Tests failed. Fix the failing tests.\n\nTest output:\n{log_excerpt}"
+                            test_feedback = f"Build or tests failed. Fix the errors below.\n\nOutput:\n{log_excerpt}"
                             await workflow.execute_activity(
                                 "transition_ticket",
-                                args=[ticket_id, "InProgress", "Tests failed; re-running implementer", "worker"],
+                                args=[ticket_id, "InProgress", "Build or tests failed; re-running implementer", "worker"],
                                 start_to_close_timeout=timedelta(seconds=30),
                             )
                             await workflow.execute_activity(
@@ -219,7 +219,7 @@ class DarkFactoryRun:
                             )
                             await workflow.execute_activity(
                                 "transition_ticket",
-                                args=[ticket_id, "InProgress", "Tests failed after retries", "worker"],
+                                args=[ticket_id, "InProgress", "Build or tests failed after retries", "worker"],
                                 start_to_close_timeout=timedelta(seconds=30),
                             )
                             await workflow.execute_activity(
