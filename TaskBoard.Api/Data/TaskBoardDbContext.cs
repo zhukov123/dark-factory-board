@@ -29,6 +29,7 @@ public sealed class TaskBoardDbContext(DbContextOptions<TaskBoardDbContext> opti
             entity.Property(t => t.Description).HasColumnName("description");
             entity.Property(t => t.CreatedAt).HasColumnName("created_at");
             entity.Property(t => t.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(t => t.LastStatusNote).HasColumnName("last_status_note");
             entity.Property(t => t.IsDeleted).HasColumnName("is_deleted");
             entity.Property(t => t.DeletedAt).HasColumnName("deleted_at");
             entity.HasIndex(t => new { t.Status, t.Repo, t.UpdatedAt });

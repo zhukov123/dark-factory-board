@@ -66,6 +66,7 @@ public sealed record TicketDto(
     string? Description,
     DateTime CreatedAt,
     DateTime UpdatedAt,
+    string? LastStatusNote,
     RunDto? Run);
 
 public sealed record RunDto(

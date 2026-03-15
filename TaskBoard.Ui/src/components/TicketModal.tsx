@@ -368,6 +368,12 @@ export function TicketModal({
               {!runStateCollapsed && (
                 <div className="collapsible-content">
                   <dl className="run-state-dl">
+                    {ticket.lastStatusNote && (
+                      <>
+                        <dt>Last status note</dt>
+                        <dd className="run-status-note">{ticket.lastStatusNote}</dd>
+                      </>
+                    )}
                     <dt>Phase</dt>
                     <dd>{ticket.run?.phase ?? 'n/a'}</dd>
                     <dt>Attempt</dt>

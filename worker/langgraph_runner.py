@@ -250,9 +250,12 @@ def build_graph(
         human_content = f"Checklist:\n" + "\n".join(state["checklist"]) + "\n\nTask spec:\n" + state["task_spec"]
         reviewer_summary = (state.get("reviewer_summary") or "").strip()
         if reviewer_summary:
-            human_content += f"\n\nReviewer feedback (address these issues):\n{reviewer_summary}"
+            if reviewer_summary.startswith("Build or tests failed"):
+                human_content += f"\n\nBuild/test failure (fix these errors):\n{reviewer_summary}"
+            else:
+                human_content += f"\n\nReviewer feedback (address these issues):\n{reviewer_summary}"
         messages: list = [
-            SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for tests. After seeing tool results, call more tools as needed until the checklist is done; then reply with a short summary and no further tool calls."),
+            SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for tests. After seeing tool results, call more tools as needed until the checklist is done; then reply with a short summary and no further tool calls. When the reviewer feedback mentions missing integration (e.g. provider, toolbar, status bar, or similar components), you must read and edit those specific files to add the missing behavior — do not only change utility or test files."),
             HumanMessage(content=human_content),
         ]
         conf = config or {}
@@ -408,6 +411,18 @@ def run_task(
     return task_result, True
 
 
+def _parse_remaining_issues(raw: str) -> str:
+    """Extract the '## Remaining issues' section from reviewer output, if present."""
+    marker_pattern = re.compile(r"^##\s*remaining\s*issues", re.IGNORECASE | re.MULTILINE)
+    match = marker_pattern.search(raw)
+    if not match:
+        return ""
+    after = raw[match.end():]
+    next_heading = re.search(r"^##\s", after, re.MULTILINE)
+    section = after[:next_heading.start()] if next_heading else after
+    return section.strip()
+
+
 def review_pr_content(
     task_spec: str,
     checklist: list[str],
@@ -417,16 +432,17 @@ def review_pr_content(
     ticket_id: str | None = None,
     all_changed_files: list[str] | None = None,
     build_and_test_output: str = "",
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
-    Run the Reviewer LLM on PR content (body + diff). Returns (verdict, summary).
-    verdict is one of pass, fail, risky. Used by review_pr activity.
-    all_changed_files: from git so reviewer sees full list even if implementer reported fewer.
-    build_and_test_output: last run's build and test log so reviewer can fail if it shows errors.
+    Run the Reviewer LLM on PR content (body + diff).
+    Returns (verdict, body, remaining_issues).
+    verdict: pass, fail, risky.
+    body: full review text (for Gitea comment).
+    remaining_issues: structured bullet list of what's missing (for implementer feedback).
     """
     llm = _get_llm()
     if llm is None:
-        return "pass", "No LLM configured; defaulting to pass."
+        return "pass", "No LLM configured; defaulting to pass.", ""
     review_content = (
         f"Task spec:\n{task_spec}\n\nChecklist:\n" + "\n".join(checklist)
         + f"\n\nPR description:\n{pr_body or '(none)'}"
@@ -436,14 +452,25 @@ def review_pr_content(
     if implementer_summary:
         review_content += f"\n\nImplementer summary (what was done):\n{implementer_summary}"
     if pr_diff:
-        # Scaffolding PRs can be large; allow up to 72k chars so reviewer can verify full checklist
         if len(pr_diff) > 72000:
             pr_diff = pr_diff[:36000] + "\n...(truncated)...\n" + pr_diff[-36000:]
         review_content += f"\n\n--- PR diff ---\n```\n{pr_diff}\n```"
     review_content += f"\n\n--- Build and test output (last run) ---\n{build_and_test_output or '(none)'}"
     messages = [
         SystemMessage(
-            content="You are a reviewer. First reply with exactly one word: pass, fail, or risky. Then on a new line write a short one-paragraph summary of your review (what was done, what meets or misses the spec). pass = task done; fail = needs more work; risky = needs human approval. Use the task spec, acceptance criteria, and the PR description and diff provided below to judge whether the checklist was completed correctly. If the build or test output above shows errors or failures, you must respond with fail and explain."
+            content=(
+                "You are a reviewer. Reply in this exact format:\n\n"
+                "First line: exactly one word: pass, fail, or risky.\n"
+                "Then a blank line and a short paragraph summary of your review.\n"
+                "Then, if your verdict is fail or risky, add a section:\n\n"
+                "## Remaining issues\n\n"
+                "with a bullet list of concrete items still missing or wrong "
+                "(include the file or component name and what needs to change).\n\n"
+                "pass = task done; fail = needs more work; risky = needs human approval. "
+                "Use the task spec, acceptance criteria, and the PR description and diff to judge "
+                "whether the checklist was completed correctly. "
+                "If the build or test output shows errors or failures, you must respond with fail and explain."
+            )
         ),
         HumanMessage(content=review_content),
     ]
@@ -470,6 +497,8 @@ def review_pr_content(
     summary = lines[1] if len(lines) > 1 else f"Reviewer verdict: {verdict}."
     if len(lines) > 2:
         summary = " ".join(lines[1:])[:2000]
+    remaining_issues = _parse_remaining_issues(raw)
+    body = raw if remaining_issues else summary
     if ticket_id:
         emit_event("worker.verdict", ticket_id, {"verdict": verdict, "summary": _trunc_long(summary)})
-    return verdict, summary
+    return verdict, body, remaining_issues

@@ -18,6 +18,7 @@ public static class DtoMapping
         ticket.Description,
         ticket.CreatedAt,
         ticket.UpdatedAt,
+        ticket.LastStatusNote,
         run is null ? null : ToRunDto(run));
 
     public static RunDto ToRunDto(RunEntity run) => new(

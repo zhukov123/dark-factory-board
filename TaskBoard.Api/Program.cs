@@ -508,6 +508,7 @@ app.MapPost("/tickets/{id}/transition", async (
 
     var fromStatus = ticket.Status;
     ticket.Status = toStatus;
+    ticket.LastStatusNote = request.Note;
     ticket.UpdatedAt = DateTime.UtcNow;
 
     db.Events.Add(new EventEntity
@@ -899,6 +900,7 @@ app.MapGet("/eligible", async (
     CancellationToken cancellationToken) =>
 {
     var now = DateTime.UtcNow;
+    await RecoverStaleInProgressRuns(db, now, cancellationToken);
     var allTickets = await db.Tickets
         .Where(t => !t.IsDeleted)
         .OrderBy(t => t.CreatedAt)
@@ -940,6 +942,7 @@ app.MapGet("/pick-next", async (
     CancellationToken cancellationToken) =>
 {
     var now = DateTime.UtcNow;
+    await RecoverStaleInProgressRuns(db, now, cancellationToken);
     var allTickets = await db.Tickets
         .Where(t => !t.IsDeleted)
         .ToListAsync(cancellationToken);
@@ -1337,5 +1340,22 @@ app.MapGet("/tickets/{id}/attachments/{attachmentId:long}", async (
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+static async Task RecoverStaleInProgressRuns(TaskBoardDbContext db, DateTime now, CancellationToken ct)
+{
+    var staleTicketIds = await db.Runs
+        .Where(r => r.LockOwner == null || !r.LockExpiresAt.HasValue || r.LockExpiresAt <= now)
+        .Select(r => r.TicketId)
+        .Distinct()
+        .ToListAsync(ct);
+    if (staleTicketIds.Count == 0) return;
+    var toRecover = await db.Tickets
+        .Where(t => t.Status == TicketStatus.InProgress && staleTicketIds.Contains(t.Id))
+        .ToListAsync(ct);
+    foreach (var t in toRecover)
+        t.Status = TicketStatus.Ready;
+    if (toRecover.Count > 0)
+        await db.SaveChangesAsync(ct);
+}
 
 public partial class Program;

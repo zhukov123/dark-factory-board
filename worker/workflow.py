@@ -3,6 +3,27 @@ from datetime import timedelta
 from temporalio import workflow
 
 
+def _token_overlap(a: str, b: str) -> float:
+    """Jaccard similarity of word tokens between two strings."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / len(words_a | words_b)
+
+
+def _feedback_is_repetitive(bodies: list[str], k: int = 3, threshold: float = 0.70) -> bool:
+    """Return True if the last K review bodies are pairwise similar above threshold."""
+    if len(bodies) < k:
+        return False
+    recent = bodies[-k:]
+    for i in range(k):
+        for j in range(i + 1, k):
+            if _token_overlap(recent[i], recent[j]) < threshold:
+                return False
+    return True
+
+
 @workflow.defn
 class DarkFactoryRun:
     """Loop: PickNextTask -> Claim -> PrepareWorkspace -> Execute -> Tests -> PR -> WaitForReview -> Close -> repeat."""
@@ -87,9 +108,10 @@ class DarkFactoryRun:
                 start_to_close_timeout=timedelta(hours=1),
             )
 
-            # 5. Run tests; on failure, route back to implementer with test output as feedback (same as reviewer failure)
+            # 5. Run tests; on failure, route back to implementer with test output as feedback
             max_test_fix_rounds = 5
             tests_passed = False
+            test_failure_bodies: list[str] = []
             for test_round in range(max_test_fix_rounds):
                 test_result = await workflow.execute_activity(
                     "run_task_tests",
@@ -99,8 +121,14 @@ class DarkFactoryRun:
                 if test_result.get("success"):
                     tests_passed = True
                     break
-                log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
-                test_feedback = f"Build or tests failed. Fix the errors below.\n\nOutput:\n{log_excerpt}"
+                log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()
+                test_failure_bodies.append(log_excerpt)
+                last_n = test_failure_bodies[-3:]
+                parts = []
+                for idx, excerpt in enumerate(last_n):
+                    round_label = test_round - len(last_n) + idx + 2
+                    parts.append(f"Test round {round_label} output:\n{excerpt}")
+                test_feedback = "Build or tests failed. Fix the errors below.\n\n" + "\n\n".join(parts)
                 await workflow.execute_activity(
                     "transition_ticket",
                     args=[ticket_id, "InProgress", "Build or tests failed; re-running implementer", "worker"],
@@ -114,17 +142,12 @@ class DarkFactoryRun:
 
             if not tests_passed:
                 workflow.logger.info(
-                    "Test fix rounds exhausted; leaving ticket In Progress",
+                    "Test fix rounds exhausted; re-queuing ticket as Ready",
                     extra={"ticket_id": ticket_id},
                 )
                 await workflow.execute_activity(
-                    "transition_ticket",
-                    args=[ticket_id, "InProgress", "Build or tests failed after retries", "worker"],
-                    start_to_close_timeout=timedelta(seconds=30),
-                )
-                await workflow.execute_activity(
                     "close_task",
-                    args=[ticket_id, owner, "InProgress"],
+                    args=[ticket_id, owner, "Ready", "Build or tests failed after retries"],
                     start_to_close_timeout=timedelta(seconds=30),
                 )
                 continue
@@ -139,22 +162,18 @@ class DarkFactoryRun:
             cleaned_up = False
 
             if pr_number <= 0:
-                workflow.logger.info("PR creation failed; leaving ticket In Progress", extra={"ticket_id": ticket_id})
-                await workflow.execute_activity(
-                    "transition_ticket",
-                    args=[ticket_id, "InProgress", "PR creation failed", "worker"],
-                    start_to_close_timeout=timedelta(seconds=30),
-                )
+                workflow.logger.info("PR creation failed; re-queuing ticket as Ready", extra={"ticket_id": ticket_id})
                 await workflow.execute_activity(
                     "close_task",
-                    args=[ticket_id, owner, "InProgress"],
+                    args=[ticket_id, owner, "Ready", "PR creation failed"],
                     start_to_close_timeout=timedelta(seconds=30),
                 )
                 merged = False
             else:
                 merged = False
                 closed_due_to_test_failure = False
-                max_review_rounds = 20
+                max_review_rounds = 7
+                review_bodies: list[str] = []
                 for round_one in range(max_review_rounds):
                     review_round = round_one + 1
                     review_result = await workflow.execute_activity(
@@ -164,11 +183,37 @@ class DarkFactoryRun:
                     )
                     verdict = (review_result.get("verdict") or "pass").strip().lower()
                     body = (review_result.get("body") or "").strip()
+                    remaining_issues = (review_result.get("remaining_issues") or "").strip()
+
+                    feedback_for_history = remaining_issues or body
+                    if feedback_for_history:
+                        review_bodies.append(feedback_for_history)
 
                     if verdict == "pass":
                         merged = True
                         break
                     if verdict == "fail" or (verdict == "risky" and skip_human_approval):
+                        if _feedback_is_repetitive(review_bodies):
+                            workflow.logger.info(
+                                "Repetitive review feedback detected; blocking ticket",
+                                extra={"ticket_id": ticket_id, "rounds": review_round},
+                            )
+                            await workflow.execute_activity(
+                                "close_task",
+                                args=[ticket_id, owner, "Blocked", "Review loop: same feedback repeated 3 times — needs human attention or ticket decomposition"],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+                            merged = False
+                            closed_due_to_test_failure = True
+                            break
+
+                        last_n = review_bodies[-3:]
+                        combined_feedback_parts = []
+                        for idx, fb in enumerate(last_n):
+                            round_label = review_round - len(last_n) + idx + 1
+                            combined_feedback_parts.append(f"Round {round_label} review:\n{fb}")
+                        combined_feedback = "\n\n".join(combined_feedback_parts)
+
                         await workflow.execute_activity(
                             "transition_ticket",
                             args=[ticket_id, "InProgress", "Re-addressing review", "worker"],
@@ -186,12 +231,12 @@ class DarkFactoryRun:
                         )
                         await workflow.execute_activity(
                             "execute_task_with_lang_graph",
-                            args=[ticket_id, task_spec, workspace_path, branch, body],
+                            args=[ticket_id, task_spec, workspace_path, branch, combined_feedback],
                             start_to_close_timeout=timedelta(hours=1),
                         )
-                        # Run tests; on failure, route back to implementer with test output (same as initial path)
                         tests_passed_after_review = False
-                        for _ in range(max_test_fix_rounds):
+                        post_review_test_failures: list[str] = []
+                        for test_round_pr in range(max_test_fix_rounds):
                             test_result = await workflow.execute_activity(
                                 "run_task_tests",
                                 args=[ticket_id, workspace_path],
@@ -200,8 +245,14 @@ class DarkFactoryRun:
                             if test_result.get("success"):
                                 tests_passed_after_review = True
                                 break
-                            log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()[:8000]
-                            test_feedback = f"Build or tests failed. Fix the errors below.\n\nOutput:\n{log_excerpt}"
+                            log_excerpt = (test_result.get("log_excerpt") or "No log captured.").strip()
+                            post_review_test_failures.append(log_excerpt)
+                            last_n = post_review_test_failures[-3:]
+                            parts = []
+                            for idx, excerpt in enumerate(last_n):
+                                round_label = test_round_pr - len(last_n) + idx + 2
+                                parts.append(f"Test round {round_label} output:\n{excerpt}")
+                            test_feedback = "Build or tests failed. Fix the errors below.\n\n" + "\n\n".join(parts)
                             await workflow.execute_activity(
                                 "transition_ticket",
                                 args=[ticket_id, "InProgress", "Build or tests failed; re-running implementer", "worker"],
@@ -214,17 +265,12 @@ class DarkFactoryRun:
                             )
                         if not tests_passed_after_review:
                             workflow.logger.info(
-                                "Test fix rounds exhausted after review; leaving ticket In Progress",
+                                "Test fix rounds exhausted after review; blocking ticket",
                                 extra={"ticket_id": ticket_id},
                             )
                             await workflow.execute_activity(
-                                "transition_ticket",
-                                args=[ticket_id, "InProgress", "Build or tests failed after retries", "worker"],
-                                start_to_close_timeout=timedelta(seconds=30),
-                            )
-                            await workflow.execute_activity(
                                 "close_task",
-                                args=[ticket_id, owner, "InProgress"],
+                                args=[ticket_id, owner, "Blocked", "Build or tests failed after retries"],
                                 start_to_close_timeout=timedelta(seconds=30),
                             )
                             merged = False
@@ -278,14 +324,14 @@ class DarkFactoryRun:
                             merged = True
                         break
                 if not merged and not review_result.get("needs_approval") and not closed_due_to_test_failure:
-                    workflow.logger.info("Review rounds exhausted; leaving ticket In Progress", extra={"ticket_id": ticket_id})
+                    workflow.logger.info("Review rounds exhausted; blocking ticket", extra={"ticket_id": ticket_id})
                     await workflow.execute_activity(
                         "close_task",
-                        args=[ticket_id, owner, "InProgress"],
+                        args=[ticket_id, owner, "Blocked", "Review rounds exhausted — needs human attention"],
                         start_to_close_timeout=timedelta(seconds=30),
                     )
 
-            # 8. Close task (only when PR merged; PR-failed leaves ticket In Progress)
+            # 8. Close task (only when PR merged; failure paths already re-queued ticket as Ready)
             if merged:
                 await workflow.execute_activity(
                     "close_task",

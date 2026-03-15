@@ -34,3 +34,6 @@ if GITHUB_MERGE_METHOD not in ("merge", "squash", "rebase"):
 # LM Studio (local OpenAI-compatible server). If set, overrides OpenRouter when OPENROUTER_API_KEY is not set.
 LMSTUDIO_BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "").rstrip("/")  # e.g. http://localhost:1234/v1
 LMSTUDIO_MODEL = os.environ.get("LMSTUDIO_MODEL", "local")  # model name as shown in LM Studio
+
+# Max chars for Gitea/GitHub comments, review bodies, and PR descriptions. 0 = no truncation.
+GITEA_COMMENT_MAX_CHARS = int(os.environ.get("GITEA_COMMENT_MAX_CHARS", "65535"))

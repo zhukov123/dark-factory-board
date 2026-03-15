@@ -9,7 +9,7 @@ from temporalio import activity
 
 logger = logging.getLogger(__name__)
 
-from config import REPO_CLONE_ROOT, GITHUB_TOKEN, GITEA_URL, GITEA_TOKEN, WORKSPACE_REPO, WORKSPACE_PATH, GITHUB_MERGE_METHOD, SKIP_HUMAN_APPROVAL
+from config import REPO_CLONE_ROOT, GITHUB_TOKEN, GITEA_URL, GITEA_TOKEN, WORKSPACE_REPO, WORKSPACE_PATH, GITHUB_MERGE_METHOD, SKIP_HUMAN_APPROVAL, GITEA_COMMENT_MAX_CHARS
 from taskboard_client import (
     claim,
     release,
@@ -21,6 +21,16 @@ from taskboard_client import (
     upload_attachment,
     emit_event,
 )
+
+
+def _truncate_for_comment(body: str, max_chars: int | None = None) -> str:
+    """Truncate body for Gitea/GitHub comments/reviews/PR descriptions.
+    Uses GITEA_COMMENT_MAX_CHARS by default. If max_chars is 0, no truncation."""
+    if max_chars is None:
+        max_chars = GITEA_COMMENT_MAX_CHARS
+    if max_chars == 0 or len(body) <= max_chars:
+        return body
+    return body[:max_chars] + "\n\n...(truncated)"
 
 
 def _sanitize_url(url: str) -> str:
@@ -510,7 +520,7 @@ def _node_build_commands(cwd: Path) -> list[tuple[str, list[str]]]:
 
 
 def _node_test_commands(cwd: Path) -> list[tuple[str, list[str]]]:
-    """Return test commands for Node: prefer test:run then test."""
+    """Return test commands for Node: prefer test:run then test. If no test script exists, return empty (build-only pass for scaffolding)."""
     commands: list[tuple[str, list[str]]] = []
     pkg_path = cwd / "package.json"
     if pkg_path.exists():
@@ -519,13 +529,25 @@ def _node_test_commands(cwd: Path) -> list[tuple[str, list[str]]]:
             scripts = pkg.get("scripts") or {}
             if scripts.get("test:run"):
                 commands.append(("test (node)", ["npm", "run", "test:run"]))
-            if scripts.get("test"):
+            elif scripts.get("test"):
                 commands.append(("test (node)", ["npm", "test"]))
+            # If no test script: return empty so run_task_tests can treat build-only as pass (e.g. scaffolding)
         except Exception:
-            commands.append(("test (node)", ["npm", "test"]))
-    if not commands:
-        commands.append(("test (node)", ["npm", "test"]))
+            pass
     return commands[:1]  # use first matching
+
+
+def _is_dotnet_no_tests_failure(output: str) -> bool:
+    """True if dotnet test failed only because there are no test projects / no tests (scaffolding)."""
+    if not output:
+        return False
+    lower = output.lower()
+    return (
+        "no test is available" in lower
+        or "no test project" in lower
+        or "could not find any test" in lower
+        or "no tests to run" in lower
+    )
 
 
 # Registry: (project_type, build_commands_factory, test_commands_factory)
@@ -591,6 +613,10 @@ async def run_task_tests(ticket_id: str, workspace_path: str) -> dict:
                 build_ok = False
         if not build_ok:
             success = False
+        elif not test_cmds:
+            # No test script (e.g. scaffolding / first stage): build-only pass
+            log_lines.append(f"=== (no test script) (cwd={test_cwd}) ===\nBuild passed; no test script in package.json — treated as pass (scaffolding).")
+            success = True
         else:
             for label, cmd in test_cmds:
                 try:
@@ -604,6 +630,9 @@ async def run_task_tests(ticket_id: str, workspace_path: str) -> dict:
                     out = (r.stdout or "") + (r.stderr or "")
                     log_lines.append(f"=== {label} (cwd={test_cwd}) ===\n{out}")
                     success = r.returncode == 0
+                    if not success and project_type == "dotnet" and _is_dotnet_no_tests_failure(out):
+                        success = True
+                        log_lines.append("(dotnet: no test projects / no tests — treated as pass for scaffolding)")
                     break
                 except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                     log_lines.append(f"=== {label} (cwd={test_cwd}) ===\nError: {e}")
@@ -632,8 +661,12 @@ async def run_task_tests(ticket_id: str, workspace_path: str) -> dict:
 
     log_content_str = "\n".join(log_lines)
     log_content = log_content_str.encode()
-    excerpt_len = 4000
-    excerpt = log_content_str[-excerpt_len:] if len(log_content_str) > excerpt_len else log_content_str
+    excerpt_len = 8000
+    if len(log_content_str) <= excerpt_len:
+        excerpt = log_content_str
+    else:
+        half = excerpt_len // 2
+        excerpt = log_content_str[:half] + "\n\n...(truncated middle)...\n\n" + log_content_str[-half:]
 
     # Persist for reviewer (last 8000 chars)
     ci_log_path = path / ".dark-factory-ci.log"
@@ -853,7 +886,7 @@ async def open_or_update_pr(
                 pr_r = httpx.post(
                     f"{base_url}/pulls",
                     headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-                    json={"title": pr_title, "body": body[:5000], "head": branch, "base": default_branch},
+                    json={"title": pr_title, "body": _truncate_for_comment(body), "head": branch, "base": default_branch},
                     timeout=15,
                 )
                 if pr_r.status_code >= 400:
@@ -913,7 +946,7 @@ async def open_or_update_pr(
                 from github import Github
                 gh = Github(GITHUB_TOKEN)
                 repo_obj = gh.get_repo(repo_slug)
-                pr = repo_obj.create_pull(title=pr_title, body=body[:5000], head=branch, base=repo_obj.default_branch)
+                pr = repo_obj.create_pull(title=pr_title, body=_truncate_for_comment(body), head=branch, base=repo_obj.default_branch)
                 pr_url = pr.html_url
                 pr_number = pr.number
             except Exception as e:
@@ -932,7 +965,7 @@ async def open_or_update_pr(
 def _post_pr_comment(repo_slug: str, pr_number: int, body: str, _review_round: int = 1) -> None:
     """Post a comment on the PR (issue comment API) so the review appears in the PR thread."""
     owner, name = repo_slug.strip().split("/", 1)
-    comment_body = body[:4000] if len(body) > 4000 else body
+    comment_body = _truncate_for_comment(body)
     if GITEA_URL and GITEA_TOKEN:
         import httpx
         base_url = f"{GITEA_URL}/api/v1/repos/{owner}/{name}"
@@ -940,7 +973,7 @@ def _post_pr_comment(repo_slug: str, pr_number: int, body: str, _review_round: i
         r = httpx.post(
             f"{base_url}/issues/{pr_number}/comments",
             headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-            json={"body": comment_body[:4000]},
+            json={"body": comment_body},
             timeout=10,
         )
         if r.status_code >= 400:
@@ -1071,7 +1104,7 @@ async def review_pr(
 
     from langgraph_runner import review_pr_content
     emit_event("worker.phase", ticket_id, {"phase": "reviewer", "detail": "waiting for LLM response"})
-    verdict, body = review_pr_content(
+    verdict, body, remaining_issues = review_pr_content(
         task_spec=task_spec,
         checklist=checklist,
         pr_body=pr_body,
@@ -1092,12 +1125,12 @@ async def review_pr(
         httpx.post(
             f"{base_url}/pulls/{pr_number}/reviews",
             headers={"Authorization": f"token {GITEA_TOKEN}", "Content-Type": "application/json"},
-            json={"event": event, "body": review_body[:4000]},
+            json={"event": event, "body": _truncate_for_comment(review_body)},
             timeout=10,
         )
         # Post same as PR comment so the full back-and-forth is visible in the PR thread
         comment_text = f"**Reviewer** (round {review_round}): Verdict: **{verdict}**\n\n{review_body}"
-        _post_pr_comment(repo, pr_number, comment_text[:4000], review_round)
+        _post_pr_comment(repo, pr_number, comment_text, review_round)
         if verdict == "pass":
             try:
                 merge_r = httpx.post(
@@ -1116,10 +1149,9 @@ async def review_pr(
         gh = Github(GITHUB_TOKEN)
         repo_obj = gh.get_repo(repo.strip())
         pr = repo_obj.get_pull(pr_number)
-        pr.create_review(event=event, body=review_body[:4000])
-        # Post same as PR comment so the full back-and-forth is visible in the PR thread
+        pr.create_review(event=event, body=_truncate_for_comment(review_body))
         comment_text = f"**Reviewer** (round {review_round}): Verdict: **{verdict}**\n\n{review_body}"
-        _post_pr_comment(repo, pr_number, comment_text[:4000], review_round)
+        _post_pr_comment(repo, pr_number, comment_text, review_round)
         if verdict == "pass":
             try:
                 pr.merge(merge_method=GITHUB_MERGE_METHOD)
@@ -1128,7 +1160,7 @@ async def review_pr(
             except Exception as merge_err:
                 logger.warning("review_pr: GitHub merge failed: %s", merge_err)
 
-    result = {"verdict": verdict, "body": body or ""}
+    result = {"verdict": verdict, "body": body or "", "remaining_issues": remaining_issues or ""}
     if verdict == "risky" and not skip_human_approval:
         decision_id = str(uuid.uuid4())
         result["needs_approval"] = True
@@ -1255,14 +1287,27 @@ async def transition_ticket(ticket_id: str, to: str, note: str | None = None, by
 
 
 @activity.defn
-async def close_task(ticket_id: str, owner: str, transition_to: str = "Done") -> None:
-    """POST /runs/release, then transition ticket (Done or InProgress). Use InProgress when PR was not completed."""
-    emit_event("worker.phase", ticket_id, {"phase": "close_task", "detail": f"releasing & transitioning to {transition_to}"})
+async def close_task(
+    ticket_id: str, owner: str, transition_to: str = "Done", note: str | None = None
+) -> None:
+    """Transition ticket first, then release run. Order ensures that if we crash or retry after transition,
+    the ticket is already Ready/Done; retrying release is safe (idempotent on API for expired lock)."""
+    emit_event("worker.phase", ticket_id, {"phase": "close_task", "detail": f"transitioning to {transition_to} then releasing"})
+    transition_note = note
+    if transition_note is None:
+        transition_note = "Closed by worker" if transition_to == "Done" else "Released (no PR completed)"
+    await transition(ticket_id, transition_to, note=transition_note, by=owner)
+    if transition_to == "Done":
+        await post_update(ticket_id, "Task closed.", author=owner)
+    else:
+        await post_update(ticket_id, "Run released; ticket re-queued as Ready.", author=owner)
     result = await release(ticket_id, owner)
     if not result.get("released"):
+        err = (result.get("error") or "").lower()
+        if "lock" in err or "conflict" in err:
+            # Lock already cleared (e.g. previous attempt released then crashed); ticket already transitioned
+            return
         raise RuntimeError(result.get("error", "release failed"))
-    await transition(ticket_id, transition_to, note="Closed by worker" if transition_to == "Done" else "Released (no PR completed)", by=owner)
-    await post_update(ticket_id, "Task closed." if transition_to == "Done" else "Run released; ticket left In Progress (PR required for Done).", author=owner)
 
 
 @activity.defn

@@ -38,6 +38,7 @@ interface RawTicketDto {
   description: string | null
   created_at: string
   updated_at: string
+  last_status_note: string | null
   run: RawRunDto | null
 }
 
@@ -359,6 +360,7 @@ function mapTicket(ticket: RawTicketDto): TicketDto {
     description: ticket.description,
     createdAt: ticket.created_at,
     updatedAt: ticket.updated_at,
+    lastStatusNote: ticket.last_status_note ?? null,
     run: ticket.run ? mapRun(ticket.run) : null,
   }
 }

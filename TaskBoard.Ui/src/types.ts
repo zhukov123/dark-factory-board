@@ -38,6 +38,7 @@ export interface TicketDto {
   description: string | null
   createdAt: string
   updatedAt: string
+  lastStatusNote: string | null
   run: RunDto | null
 }
 

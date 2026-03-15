@@ -15,6 +15,7 @@ public sealed class TicketEntity
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+    public string? LastStatusNote { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAt { get; set; }
 

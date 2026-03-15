@@ -17,6 +17,7 @@ describe('simulateDoneUnlocks', () => {
         description: null,
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
+        lastStatusNote: null,
         run: null,
       },
       {
@@ -31,6 +32,7 @@ describe('simulateDoneUnlocks', () => {
         description: null,
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
+        lastStatusNote: null,
         run: null,
       },
     ]
