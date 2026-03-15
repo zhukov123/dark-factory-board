@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,7 @@ class TaskState(TypedDict):
     current_file_edits: list[str]
     implementer_summary: str
     reviewer_summary: str  # PR review feedback when re-running after fail/risky
+    build_test_hint: NotRequired[str]  # Instructions: run these build/test commands before finishing
 
 
 def _tools(workspace_path: str):
@@ -155,8 +156,9 @@ def _tools(workspace_path: str):
 
     @tool
     def run_command(cmd: str) -> str:
-        """Run a shell command in the workspace (e.g. lint, test). Timeout 30s. Do NOT start long-running servers (uvicorn, flask, node, etc)."""
+        """Run a shell command in the workspace (e.g. build, lint, test). Timeout 3 minutes. Do NOT start long-running servers (uvicorn, flask, node, etc)."""
         import subprocess, signal, os as _os
+        _timeout_sec = 180
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -168,11 +170,11 @@ def _tools(workspace_path: str):
                 start_new_session=True,
             )
             try:
-                stdout, stderr = proc.communicate(timeout=30)
+                stdout, stderr = proc.communicate(timeout=_timeout_sec)
             except subprocess.TimeoutExpired:
                 _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
                 proc.wait()
-                return f"Command '{cmd}' timed out after 30 seconds. Do NOT start servers."
+                return f"Command '{cmd}' timed out after {_timeout_sec} seconds. Do NOT start servers."
             out = (stdout or "") + (stderr or "")
             if len(out) > 3000:
                 out = out[:1500] + "\n...(truncated)...\n" + out[-1500:]
@@ -254,8 +256,11 @@ def build_graph(
                 human_content += f"\n\nBuild/test failure (fix these errors):\n{reviewer_summary}"
             else:
                 human_content += f"\n\nReviewer feedback (address these issues):\n{reviewer_summary}"
+        build_hint = (state.get("build_test_hint") or "").strip()
+        if build_hint:
+            human_content += f"\n\n---\n{build_hint}"
         messages: list = [
-            SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for tests. After seeing tool results, call more tools as needed until the checklist is done; then reply with a short summary and no further tool calls. When the reviewer feedback mentions missing integration (e.g. provider, toolbar, status bar, or similar components), you must read and edit those specific files to add the missing behavior — do not only change utility or test files."),
+            SystemMessage(content="You are an implementer. Use the tools to complete the checklist. You MUST call write_file for each file you create or change. Prefer read_file first if a file exists, then write_file, then run_command for build/tests. Before replying with your final summary, you MUST run the project's build and test commands (see the instructions in the message below). If they fail, fix the code and run the commands again; only when build and tests pass should you reply with a short summary and no further tool calls. Do not skip the build/test step. When the reviewer feedback mentions missing integration (e.g. provider, toolbar, status bar, or similar components), you must read and edit those specific files to add the missing behavior — do not only change utility or test files."),
             HumanMessage(content=human_content),
         ]
         conf = config or {}
@@ -327,6 +332,7 @@ def run_task(
     workspace_path: str,
     thread_id: str = "default",
     reviewer_feedback: str | None = None,
+    build_test_hint: str = "",
 ) -> tuple[dict, bool]:
     """
     Run the LangGraph (Planner -> Implementer). Returns (task_result, success).
@@ -378,6 +384,7 @@ def run_task(
             "current_file_edits": [],
             "implementer_summary": implementer_summary_from_file,
             "reviewer_summary": (reviewer_feedback or "").strip(),
+            "build_test_hint": (build_test_hint or "").strip(),
         }
 
         log_dir = _llm_log_dir()

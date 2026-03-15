@@ -457,6 +457,7 @@ async def execute_task_with_lang_graph(
         from langgraph_runner import run_task
     except ImportError:
         return {"success": True}
+    build_test_hint = get_build_test_command_hint(workspace_path)
     thread_id = f"ticket-{ticket_id}"
     try:
         task_result, success = run_task(
@@ -464,6 +465,7 @@ async def execute_task_with_lang_graph(
             workspace_path=workspace_path,
             thread_id=thread_id,
             reviewer_feedback=reviewer_feedback,
+            build_test_hint=build_test_hint,
         )
     except Exception as e:
         err_msg = (str(e) or repr(e))[:2000]
@@ -564,6 +566,41 @@ _FALLBACK_TEST_COMMANDS: list[tuple[str, list[str]]] = [
     ("dotnet test", ["dotnet", "test", "-v", "n"]),
     ("npm test", ["npm", "test"]),
 ]
+
+
+def get_build_test_command_hint(workspace_path: str) -> str:
+    """Return instructions for the implementer: which build/test commands to run before finishing.
+    Uses the same detection as run_task_tests so the implementer runs what the worker will run."""
+    path = Path(workspace_path)
+    test_cwd = _find_test_cwd(workspace_path)
+    if not test_cwd or not test_cwd.exists():
+        return ""
+    project_type = _detect_project_type(test_cwd)
+    if not project_type:
+        return ""
+    parts: list[str] = []
+    for ptype, build_factory, test_factory in _BUILD_TEST_REGISTRY:
+        if ptype != project_type:
+            continue
+        build_cmds = build_factory(test_cwd) if callable(build_factory) else build_factory
+        test_cmds = test_factory(test_cwd) if callable(test_factory) else test_factory
+        for _, cmd_list in build_cmds:
+            parts.append(" ".join(cmd_list))
+        for _, cmd_list in test_cmds:
+            parts.append(" ".join(cmd_list))
+        break
+    if not parts:
+        return ""
+    try:
+        rel = test_cwd.resolve().relative_to(path.resolve())
+        prefix = f"cd {rel} && " if str(rel) != "." else ""
+    except ValueError:
+        prefix = ""
+    commands_str = " && ".join(parts)
+    return (
+        f"Before replying with your final summary, you MUST run the project's build and tests and fix any failures. "
+        f"Run: {prefix}{commands_str}"
+    )
 
 
 @activity.defn
